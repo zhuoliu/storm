@@ -1,4 +1,9 @@
 ## 0.11.0
+ * STORM-596: remove config topology.receiver.buffer.size
+ * STORM-808: allow null to be parsed as null
+ * STORM-816: maven-gpg-plugin does not work with gpg 2.1
+ * STORM-827: Allow AutoTGT to work with storm-hdfs too.
+ * STORM-811: remove old metastor_db before running tests again.
  * STORM-807: quote args to storm.py correctly
  * STORM-796: Add support for "error" command in ShellSpout
  * STORM-745: fix storm.cmd to evaluate 'shift' correctly with 'storm jar'
@@ -48,6 +53,7 @@
  * STORM-749: Remove CSRF check from the REST API.
 
 ## 0.10.0
+ * STORM-752: [storm-redis] Clarify Redis*StateUpdater's expire is optional
  * STORM-681: Auto insert license header with genthrift.sh
  * STORM-707: Client (Netty): improve logging to help troubleshooting connection woes
  * STORM-699: storm-jdbc should support custom insert queries. 
