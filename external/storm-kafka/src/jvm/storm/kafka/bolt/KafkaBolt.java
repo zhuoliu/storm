@@ -23,9 +23,9 @@ import backtype.storm.topology.OutputFieldsDeclarer;
 import backtype.storm.topology.base.BaseRichBolt;
 import backtype.storm.tuple.Tuple;
 import backtype.storm.utils.TupleUtils;
-import kafka.javaapi.producer.Producer;
-import kafka.producer.KeyedMessage;
-import kafka.producer.ProducerConfig;
+import org.apache.kafka.clients.producer.Producer;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import storm.kafka.bolt.mapper.FieldNameBasedTupleToKafkaMapper;
@@ -83,8 +83,7 @@ public class KafkaBolt<K, V> extends BaseRichBolt {
         Map configMap = (Map) stormConf.get(KAFKA_BROKER_PROPERTIES);
         Properties properties = new Properties();
         properties.putAll(configMap);
-        ProducerConfig config = new ProducerConfig(properties);
-        producer = new Producer<K, V>(config);
+        producer = new KafkaProducer<K, V>(properties);
         this.collector = collector;
     }
 
@@ -102,8 +101,8 @@ public class KafkaBolt<K, V> extends BaseRichBolt {
             key = mapper.getKeyFromTuple(input);
             message = mapper.getMessageFromTuple(input);
             topic = topicSelector.getTopic(input);
-            if(topic != null ) {
-                producer.send(new KeyedMessage<K, V>(topic, key, message));
+            if (topic != null ) {
+                producer.send(new ProducerRecord<K, V>(topic, key, message));
             } else {
                 LOG.warn("skipping key = " + key + ", topic selector returned null.");
             }
