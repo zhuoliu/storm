@@ -170,7 +170,8 @@
 (defprotocol RunningExecutor
   (render-stats [this])
   (get-executor-id [this])
-  (credentials-changed [this creds]))
+  (credentials-changed [this creds])
+  (get-backpressure-flag [this]))
 
 (defn throttled-report-error-fn [executor]
   (let [storm-conf (:storm-conf executor)
@@ -261,6 +262,7 @@
                                ((:suicide-fn <>))))
      :deserializer (KryoTupleDeserializer. storm-conf worker-context)
      :sampler (mk-stats-sampler storm-conf)
+     :backpressure (atom false)
      ;; TODO: add in the executor-specific stuff in a :specific... or make a spout-data, bolt-data function?
      )))
 
@@ -364,7 +366,7 @@
       (render-stats [this]
         (stats/render-stats! (:stats executor-data)))
       (get-executor-id [this]
-        executor-id )
+        executor-id)
       (credentials-changed [this creds]
         (let [receive-queue (:receive-queue executor-data)
               context (:worker-context executor-data)]
@@ -372,6 +374,8 @@
             receive-queue
             [[nil (TupleImpl. context [creds] Constants/SYSTEM_TASK_ID Constants/CREDENTIALS_CHANGED_STREAM_ID)]]
               )))
+      (get-backpressure-flag [this]
+        @(:backpressure executor-data))
       Shutdownable
       (shutdown
         [this]
@@ -602,7 +606,9 @@
                     (log-message "Activating spout " component-id ":" (keys task-datas))
                     (fast-list-iter [^ISpout spout spouts] (.activate spout)))
                
-                  (fast-list-iter [^ISpout spout spouts] (.nextTuple spout)))
+                  (if @(:throttle-on (:worker executor-data))
+                    (Time/sleep 100)  ;; automatic backpressure for flow control; TODO: log or write to some metrics for stats
+                    (fast-list-iter [^ISpout spout spouts] (.nextTuple spout))))
                 (do
                   (when @last-active
                     (reset! last-active false)
@@ -641,6 +647,11 @@
         {:keys [storm-conf component-id worker-context transfer-fn report-error sampler
                 open-or-prepare-was-called?]} executor-data
         rand (Random. (Utils/secureRandomLong))
+        low-watermark  0.90 ; ((:storm-conf executor-data) BACKPRESSURE-EXECUTOR-LOW-WATERMARK)  ;; TODO: will choose theoretically good defaults later;;
+        high-watermark 0.50 ; ((:storm-conf executor-data) BACKPRESSURE-EXECUTOR-HIGH-WATERMARK) ;; TODO: define this two in Config.java
+        receive-queue-size ((:storm-conf executor-data) TOPOLOGY-EXECUTOR-RECEIVE-BUFFER-SIZE)
+        low-watermark (int (* low-watermark receive-queue-size))
+        high-watermark (int (* high-watermark receive-queue-size))
         tuple-action-fn (fn [task-id ^TupleImpl tuple]
                           ;; synchronization needs to be done with a key provided by this bolt, otherwise:
                           ;; spout 1 sends synchronization (s1), dies, same spout restarts somewhere else, sends synchronization (s2) and incremental update. s2 and update finish before s1 -> lose the incremental update
@@ -813,6 +824,12 @@
         (let [receive-queue (:receive-queue executor-data)
               event-handler (mk-task-receiver executor-data tuple-action-fn)]
           (disruptor/consumer-started! receive-queue)
+          (if (and (> (.population receive-queue) high-watermark) (not @(:backpressure executor-data)))
+            (do (reset! (:backpressure executor-data) true)
+                (disruptor/notify-backpressure-checker (:backpressure-trigger (:worker executor-data)))))
+          (if (and (< (.population receive-queue) low-watermark) @(:backpressure executor-data))
+            (do (reset! (:backpressure executor-data) false)
+                (disruptor/notify-backpressure-checker (:backpressure-trigger (:worker executor-data)))))
           (fn []            
             (disruptor/consume-batch-when-available receive-queue event-handler)
             ;; try to clear the overflow-buffer

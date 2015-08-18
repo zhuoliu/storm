@@ -138,9 +138,19 @@ public class DisruptorQueue implements IStatefulObject {
         //TODO: only set this if the consumer cursor has changed?
         _consumer.set(cursor);
     }
-    
+
+    public void notifyBackpressureChecker(Object trigger) {
+        try {
+            synchronized (trigger) {
+                trigger.notifyAll();
+            }
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
     /*
-     * Caches until consumerStarted is called, upon which the cache is flushed to the consumer
+     * Caches until consumerStarted is called, upon which the cache is flushed to the consumgit der
      */
     public void publish(Object obj) {
         try {

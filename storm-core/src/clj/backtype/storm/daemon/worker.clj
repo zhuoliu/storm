@@ -22,7 +22,7 @@
   (:require [backtype.storm.messaging.loader :as msg-loader])
   (:import [java.util.concurrent Executors])
   (:import [java.util ArrayList HashMap])
-  (:import [backtype.storm.utils Utils TransferDrainer ThriftTopologyUtils])
+  (:import [backtype.storm.utils Utils TransferDrainer ThriftTopologyUtils WorkerBackpressureThread BackpressureCallback])
   (:import [backtype.storm.messaging TransportFactory])
   (:import [backtype.storm.messaging TaskMessage IContext IConnection ConnectionWithStatus ConnectionWithStatus$Status])
   (:import [backtype.storm.daemon Shutdownable])
@@ -114,12 +114,35 @@
   (fast-list-iter [[task tuple :as pair] tuple-batch]
     (.serialize serializer tuple)))
 
+(defn- mk-backpressure-handler []
+  "check-and-update-backpressure"
+  (disruptor/backpressure-handler 
+    (fn [worker]
+      (let [executors (:executors worker)
+            storm-id (:storm-id worker)
+            assignment-id (:assignment-id worker)
+            port (:port worker)
+            storm-cluster-state (:storm-cluster-state worker)]
+        (if executors 
+          (if (reduce #(or %1 %2) (map #(.get-backpressure-flag %1) executors))
+            (reset! (:backpressure worker) true)   ;; at least one executor has set backpressure
+            (reset! (:backpressure worker) false)))
+        ;; update the worker's backpressure flag to zookeeper here
+        (.worker-backpressure! storm-cluster-state storm-id assignment-id port @(:backpressure worker))  ;; TODO: swap! we may check and update to avoid un-ness updates to ZK
+        ))))  ;; all executors have backpressure unset
+
 (defn mk-transfer-fn [worker]
   (let [local-tasks (-> worker :task-ids set)
         local-transfer (:transfer-local-fn worker)
-        ^DisruptorQueue transfer-queue (:transfer-queue worker)
+        transfer-queue (:transfer-queue worker)
         task->node+port (:cached-task->node+port worker)
         try-serialize-local ((:storm-conf worker) TOPOLOGY-TESTING-ALWAYS-TRY-SERIALIZE)
+        low-watermark  0.80 ; ((:storm-conf worker) BACKPRESSURE-WORKER-LOW-WATERMARK)  ;; TODO: will choose theoretically good defaults later;;
+        high-watermark 0.50 ; ((:storm-conf worker) BACKPRESSURE-WORKER-HIGH-WATERMARK) ;; TODO: define this two in Config.java
+        transfer-queue-size ((:storm-conf worker) TOPOLOGY-TRANSFER-BUFFER-SIZE)
+        low-watermark (int (* low-watermark transfer-queue-size))
+        high-watermark (int (* high-watermark transfer-queue-size))
+
         transfer-fn
           (fn [^KryoTupleSerializer serializer tuple-batch]
             (let [local (ArrayList.)
@@ -137,9 +160,19 @@
                         (.add remote (TaskMessage. task (.serialize serializer tuple)))
                         (log-warn "Can't transfer tuple - task value is nil. tuple type: " (pr-str (type tuple)) " and information: " (pr-str tuple)))
                      ))))
-                (local-transfer local)
-                (disruptor/publish transfer-queue remoteMap)
-              ))]
+              ;; each executor itself will do the self setting for the worker's backpressure tag
+              ;; however, when the backpressure is set, the worker still need to check whether all the executor's setting hsa cleared to unset worker's backpressure
+              ;; (check-executors-backpressure worker)
+              (if (> (.population transfer-queue) high-watermark)
+                (do (reset! (:backpressure worker) true)
+                    (disruptor/notify-backpressure-checker (:backpressure-trigger worker))))  ;; set backpressure no matter how the executors are  
+
+              ;(if (not @(:backpressure worker)) ;; only when the worker's backpressure is not set need we check the executor's flags
+              ;  )
+              ; (if (< (.population transfer-queue) low-watermark)
+              ;  (reset! (:backpressure worker) false))             ;; TODO TODO !!!: this should also depend on executor's backpressure flags
+              (local-transfer local)
+              (disruptor/publish transfer-queue remoteMap)))]
     (if try-serialize-local
       (do 
         (log-warn "WILL TRY TO SERIALIZE ALL TUPLES (Turn off " TOPOLOGY-TESTING-ALWAYS-TRY-SERIALIZE " for production)")
@@ -255,6 +288,9 @@
       :receiver-thread-count (get storm-conf WORKER-RECEIVER-THREAD-COUNT)
       :transfer-fn (mk-transfer-fn <>)
       :assignment-versions assignment-versions
+      :backpressure (atom false) ;; whether this worker is going slow
+      :backpressure-trigger (atom false) ;; a trigger for synchronization with executors
+      :throttle-on (atom false) ;; whether throttle is activated for spouts
       )))
 
 (defn- endpoint->string [[node port]]
@@ -453,7 +489,16 @@
 
         transfer-tuples (mk-transfer-tuples-handler worker)
         
-        transfer-thread (disruptor/consume-loop* (:transfer-queue worker) transfer-tuples)                                       
+        transfer-thread (disruptor/consume-loop* (:transfer-queue worker) transfer-tuples)               
+
+        backpressure-handler (mk-backpressure-handler)        
+        backpressure-thread (WorkerBackpressureThread. (:backpressure-trigger worker) worker backpressure-handler)
+        _ (.start backpressure-thread)  ;; TODO: zliu: is it OK that I start it here?
+        callback (fn cb [] 
+                   (let [throttle-on (.topology-backpressure storm-cluster-state storm-id cb)]
+                     (reset! (:throttle-on worker) throttle-on)))
+        _ (.topology-backpressure storm-cluster-state storm-id callback)    ;; is this correct???????
+
         shutdown* (fn []
                     (log-message "Shutting down worker " storm-id " " assignment-id " " port)
                     (doseq [[_ socket] @(:cached-node+port->socket worker)]
@@ -477,6 +522,9 @@
                     (.interrupt transfer-thread)
                     (.join transfer-thread)
                     (log-message "Shut down transfer thread")
+                    (.interrupt backpressure-thread)
+                    (.join backpressure-thread)
+                    (log-message "Shut down backpressure thread")
                     (cancel-timer (:heartbeat-timer worker))
                     (cancel-timer (:refresh-connections-timer worker))
                     (cancel-timer (:refresh-credentials-timer worker))
@@ -510,15 +558,20 @@
                  ))
              )
         credentials (atom initial-credentials)
-        check-credentials-changed (fn []
-                                    (let [new-creds (.credentials (:storm-cluster-state worker) storm-id nil)]
-                                      (when-not (= new-creds @credentials) ;;This does not have to be atomic, worst case we update when one is not needed
-                                        (AuthUtils/updateSubject subject auto-creds new-creds)
-                                        (dofor [e @executors] (.credentials-changed e new-creds))
-                                        (reset! credentials new-creds))))
+        check-credentials-throttle-changed (fn []
+                                             (let [callback (fn cb [] 
+                                                              (let [throttle-on (.topology-backpressure (:storm-cluster-state worker) storm-id cb)]
+                                                                (reset! (:throttle-on worker) throttle-on)))
+                                                   new-throttle-on (.topology-backpressure (:storm-cluster-state worker) storm-id callback)
+                                                   new-creds (.credentials (:storm-cluster-state worker) storm-id nil)]
+                                               (reset! (:throttle-on worker) new-throttle-on)
+                                               (when-not (= new-creds @credentials) ;;This does not have to be atomic, worst case we update when one is not needed
+                                                 (AuthUtils/updateSubject subject auto-creds new-creds)
+                                                 (dofor [e @executors] (.credentials-changed e new-creds))
+                                                 (reset! credentials new-creds))))
       ]
-    (.credentials (:storm-cluster-state worker) storm-id (fn [args] (check-credentials-changed)))
-    (schedule-recurring (:refresh-credentials-timer worker) 0 (conf TASK-CREDENTIALS-POLL-SECS) check-credentials-changed)
+    (.credentials (:storm-cluster-state worker) storm-id (fn [args] (check-credentials-throttle-changed)))
+    (schedule-recurring (:refresh-credentials-throttle-timer worker) 0 (conf TASK-CREDENTIALS-POLL-SECS) check-credentials-throttle-changed)
     (schedule-recurring (:refresh-connections-timer worker) 0 (conf TASK-REFRESH-POLL-SECS) refresh-connections)
     (schedule-recurring (:refresh-active-timer worker) 0 (conf TASK-REFRESH-POLL-SECS) (partial refresh-storm-active worker))
 

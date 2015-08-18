@@ -15,7 +15,7 @@
 ;; limitations under the License.
 
 (ns backtype.storm.disruptor
-  (:import [backtype.storm.utils DisruptorQueue])
+  (:import [backtype.storm.utils DisruptorQueue BackpressureCallback])
   (:import [com.lmax.disruptor MultiThreadedClaimStrategy SingleThreadedClaimStrategy
             BlockingWaitStrategy SleepingWaitStrategy YieldingWaitStrategy
             BusySpinWaitStrategy])
@@ -57,6 +57,13 @@
       [this o seq-id batchEnd?]
       (afn o seq-id batchEnd?))))
 
+(defn backpressure-handler
+  [afn]
+  (reify BackpressureCallback
+    (onEvent
+      [this o]
+      (afn o))))
+
 (defmacro handler
   [& args]
   `(clojure-handler (fn ~@args)))
@@ -70,6 +77,10 @@
 (defn try-publish
   [^DisruptorQueue q o]
   (.tryPublish q o))
+
+(defn notify-backpressure-checker
+  [trigger]
+  (.notifyBackpressureChecker trigger))
 
 (defn consume-batch
   [^DisruptorQueue queue handler]
