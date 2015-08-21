@@ -139,7 +139,7 @@ public class DisruptorQueue implements IStatefulObject {
         _consumer.set(cursor);
     }
 
-    public void notifyBackpressureChecker(Object trigger) {
+    static public void notifyBackpressureChecker(Object trigger) {
         try {
             synchronized (trigger) {
                 trigger.notifyAll();

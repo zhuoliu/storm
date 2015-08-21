@@ -80,7 +80,7 @@
 
 (defn notify-backpressure-checker
   [trigger]
-  (.notifyBackpressureChecker trigger))
+  (DisruptorQueue/notifyBackpressureChecker trigger))
 
 (defn consume-batch
   [^DisruptorQueue queue handler]

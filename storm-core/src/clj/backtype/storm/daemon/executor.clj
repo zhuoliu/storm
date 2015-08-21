@@ -28,7 +28,7 @@
   (:import [backtype.storm.grouping CustomStreamGrouping])
   (:import [backtype.storm.task WorkerTopologyContext IBolt OutputCollector IOutputCollector])
   (:import [backtype.storm.generated GlobalStreamId])
-  (:import [backtype.storm.utils Utils MutableObject RotatingMap RotatingMap$ExpiredCallback MutableLong Time])
+  (:import [backtype.storm.utils Utils MutableObject RotatingMap RotatingMap$ExpiredCallback MutableLong Time DisruptorQueue])
   (:import [com.lmax.disruptor InsufficientCapacityException])
   (:import [backtype.storm.serialization KryoTupleSerializer KryoTupleDeserializer])
   (:import [backtype.storm.daemon Shutdownable])
@@ -607,7 +607,10 @@
                     (fast-list-iter [^ISpout spout spouts] (.activate spout)))
                
                   (if @(:throttle-on (:worker executor-data))
-                    (Time/sleep 100)  ;; automatic backpressure for flow control; TODO: log or write to some metrics for stats
+                    (do 
+                      (log-message "zliu, spout executor " (:executor-id executor-data) " found throttle-on, begin to suspend sending tuples")
+                      (Time/sleep 100)  ;; automatic backpressure for flow control; TODO: log or write to some metrics for stats
+                      )
                     (fast-list-iter [^ISpout spout spouts] (.nextTuple spout))))
                 (do
                   (when @last-active
@@ -647,8 +650,8 @@
         {:keys [storm-conf component-id worker-context transfer-fn report-error sampler
                 open-or-prepare-was-called?]} executor-data
         rand (Random. (Utils/secureRandomLong))
-        low-watermark  0.90 ; ((:storm-conf executor-data) BACKPRESSURE-EXECUTOR-LOW-WATERMARK)  ;; TODO: will choose theoretically good defaults later;;
-        high-watermark 0.50 ; ((:storm-conf executor-data) BACKPRESSURE-EXECUTOR-HIGH-WATERMARK) ;; TODO: define this two in Config.java
+        low-watermark  0.10 ; ((:storm-conf executor-data) BACKPRESSURE-EXECUTOR-LOW-WATERMARK)  ;; TODO: will choose theoretically good defaults later;;
+        high-watermark 0.20 ; ((:storm-conf executor-data) BACKPRESSURE-EXECUTOR-HIGH-WATERMARK) ;; TODO: define this two in Config.java
         receive-queue-size ((:storm-conf executor-data) TOPOLOGY-EXECUTOR-RECEIVE-BUFFER-SIZE)
         low-watermark (int (* low-watermark receive-queue-size))
         high-watermark (int (* high-watermark receive-queue-size))
@@ -682,7 +685,19 @@
                                     user-context (:user-context task-data)
                                     sampler? (sampler)
                                     execute-sampler? (execute-sampler)
-                                    now (if (or sampler? execute-sampler?) (System/currentTimeMillis))]
+                                    now (if (or sampler? execute-sampler?) (System/currentTimeMillis))
+                                    receive-queue (:receive-queue executor-data)]
+                                (log-message "zliu: excutor " (:executor-id executor-data) " size now is:  " (.population receive-queue) " high-wm is " high-watermark)
+                                (if (and (> (.population receive-queue) high-watermark) (not @(:backpressure executor-data)))
+                                  (do (reset! (:backpressure executor-data) true)
+                                      (log-message "zliu executor me is congested, set true")
+                                      (DisruptorQueue/notifyBackpressureChecker (:backpressure-trigger (:worker executor-data)))
+                                      (log-message "zliu executor " (:executor-id executor-data) " finish notiftBackpressureChecker for setting bckpressure")))
+                                      ;; (disruptor/notify-backpressure-checker (:backpressure-trigger (:worker executor-data)))))
+                                (if (and (< (.population receive-queue) low-watermark) @(:backpressure executor-data))
+                                  (do (reset! (:backpressure executor-data) false)
+                                      (DisruptorQueue/notifyBackpressureChecker (:backpressure-trigger (:worker executor-data)))))
+                                      ;; (disruptor/notify-backpressure-checker (:backpressure-trigger (:worker executor-data)))))
                                 (when sampler?
                                   (.setProcessSampleStartTime tuple now))
                                 (when execute-sampler?
@@ -822,15 +837,21 @@
         (setup-metrics! executor-data)
 
         (let [receive-queue (:receive-queue executor-data)
-              event-handler (mk-task-receiver executor-data tuple-action-fn)]
+              event-handler (mk-task-receiver executor-data tuple-action-fn)
+              low-watermark  0.10 ; ((:storm-conf executor-data) BACKPRESSURE-EXECUTOR-LOW-WATERMARK)
+              high-watermark 0.20 ; ((:storm-conf executor-data) BACKPRESSURE-EXECUTOR-HIGH-WATERMARK) 
+              receive-queue-size ((:storm-conf executor-data) TOPOLOGY-EXECUTOR-RECEIVE-BUFFER-SIZE)
+              low-watermark (int (* low-watermark receive-queue-size))
+              high-watermark (int (* high-watermark receive-queue-size))]
           (disruptor/consumer-started! receive-queue)
-          (if (and (> (.population receive-queue) high-watermark) (not @(:backpressure executor-data)))
-            (do (reset! (:backpressure executor-data) true)
-                (disruptor/notify-backpressure-checker (:backpressure-trigger (:worker executor-data)))))
-          (if (and (< (.population receive-queue) low-watermark) @(:backpressure executor-data))
-            (do (reset! (:backpressure executor-data) false)
-                (disruptor/notify-backpressure-checker (:backpressure-trigger (:worker executor-data)))))
+          (log-message "zliu: async-loop excutor rec-q size now is:  " (.population receive-queue))
           (fn []            
+            (log-message "zliu, to call consume-batch-when-available in " (:executor-id executor-data) " q size is " (.population receive-queue))
+            ;; this is necessary because rec-q can be 0 while the executor backpressure flag is forever set
+            (if (and (< (.population receive-queue) low-watermark) @(:backpressure executor-data))
+              (do (reset! (:backpressure executor-data) false)
+                  (DisruptorQueue/notifyBackpressureChecker (:backpressure-trigger (:worker executor-data)))))
+                  ;; (disruptor/notify-backpressure-checker (:backpressure-trigger (:worker executor-data)))))
             (disruptor/consume-batch-when-available receive-queue event-handler)
             ;; try to clear the overflow-buffer
             (try-cause

@@ -42,6 +42,7 @@
 ;; * Test that it repeats the meta for a partitioned state (test partitioned emitter on its own)
 ;; * Test that partitioned state emits nothing for the partition if it has seen a future transaction for that partition (test partitioned emitter on its own)
 
+(comment
 (defn mk-coordinator-state-changer [atom]
   (TransactionalSpoutCoordinator.
    (reify ITransactionalSpout
@@ -733,3 +734,4 @@
           (. (Mockito/verify builder1) (withACL expectedAcls))
         (catch MockitoAssertionError e
           e)))))))
+)

@@ -22,7 +22,7 @@
   (:require [backtype.storm.messaging.loader :as msg-loader])
   (:import [java.util.concurrent Executors])
   (:import [java.util ArrayList HashMap])
-  (:import [backtype.storm.utils Utils TransferDrainer ThriftTopologyUtils WorkerBackpressureThread BackpressureCallback])
+  (:import [backtype.storm.utils Utils TransferDrainer ThriftTopologyUtils WorkerBackpressureThread BackpressureCallback DisruptorQueue])
   (:import [backtype.storm.messaging TransportFactory])
   (:import [backtype.storm.messaging TaskMessage IContext IConnection ConnectionWithStatus ConnectionWithStatus$Status])
   (:import [backtype.storm.daemon Shutdownable])
@@ -114,20 +114,24 @@
   (fast-list-iter [[task tuple :as pair] tuple-batch]
     (.serialize serializer tuple)))
 
-(defn- mk-backpressure-handler []
-  "check-and-update-backpressure"
+(defn- mk-backpressure-handler [executors]
+  "make a handler that checks and updates worker's backpressure flag"
   (disruptor/backpressure-handler 
     (fn [worker]
-      (let [executors (:executors worker)
-            storm-id (:storm-id worker)
+      (let [storm-id (:storm-id worker)
             assignment-id (:assignment-id worker)
             port (:port worker)
             storm-cluster-state (:storm-cluster-state worker)]
+        (log-message "zliu I am now in backpressure-handler (callback), executors is " executors) ; (map #(.get-backpressure-flag %1) executors))
+        (doseq [ed executors] 
+          (log-message "zliu executor" (.get-executor-id ed) " flag is " (.get-backpressure-flag ed)))
         (if executors 
           (if (reduce #(or %1 %2) (map #(.get-backpressure-flag %1) executors))
             (reset! (:backpressure worker) true)   ;; at least one executor has set backpressure
             (reset! (:backpressure worker) false)))
+        (log-message "zliu I am now in backpressure-handler, worker flag is " @(:backpressure worker))
         ;; update the worker's backpressure flag to zookeeper here
+        (if @(:backpressure worker) (log-message "zliu Found executor congested, setting worker's backpressure flag"))
         (.worker-backpressure! storm-cluster-state storm-id assignment-id port @(:backpressure worker))  ;; TODO: swap! we may check and update to avoid un-ness updates to ZK
         ))))  ;; all executors have backpressure unset
 
@@ -137,8 +141,8 @@
         transfer-queue (:transfer-queue worker)
         task->node+port (:cached-task->node+port worker)
         try-serialize-local ((:storm-conf worker) TOPOLOGY-TESTING-ALWAYS-TRY-SERIALIZE)
-        low-watermark  0.80 ; ((:storm-conf worker) BACKPRESSURE-WORKER-LOW-WATERMARK)  ;; TODO: will choose theoretically good defaults later;;
-        high-watermark 0.50 ; ((:storm-conf worker) BACKPRESSURE-WORKER-HIGH-WATERMARK) ;; TODO: define this two in Config.java
+        low-watermark  0.10 ; ((:storm-conf worker) BACKPRESSURE-WORKER-LOW-WATERMARK)  ;; TODO: will choose theoretically good defaults later;;
+        high-watermark 0.20 ; ((:storm-conf worker) BACKPRESSURE-WORKER-HIGH-WATERMARK) ;; TODO: define this two in Config.java
         transfer-queue-size ((:storm-conf worker) TOPOLOGY-TRANSFER-BUFFER-SIZE)
         low-watermark (int (* low-watermark transfer-queue-size))
         high-watermark (int (* high-watermark transfer-queue-size))
@@ -163,9 +167,10 @@
               ;; each executor itself will do the self setting for the worker's backpressure tag
               ;; however, when the backpressure is set, the worker still need to check whether all the executor's setting hsa cleared to unset worker's backpressure
               ;; (check-executors-backpressure worker)
+              (log-message "zliu: worker trans-q size now is:  " (.population transfer-queue))
               (if (> (.population transfer-queue) high-watermark)
                 (do (reset! (:backpressure worker) true)
-                    (disruptor/notify-backpressure-checker (:backpressure-trigger worker))))  ;; set backpressure no matter how the executors are  
+                    (DisruptorQueue/notifyBackpressureChecker (:backpressure-trigger worker))))  ;; set backpressure no matter how the executors are  
 
               ;(if (not @(:backpressure worker)) ;; only when the worker's backpressure is not set need we check the executor's flags
               ;  )
@@ -487,14 +492,21 @@
 
         _ (reset! executors (dofor [e (:executors worker)] (executor/mk-executor worker e initial-credentials)))
 
+        _ (log-message "zliu executors is " executors ", executors count is " (count @executors))
+        _ (log-message "zliu first exe id is " (.get-executor-id (first (vec @executors))))
+        _ (log-message "zliu first exe flag is " (.get-backpressure-flag (first (vec @executors))))
+        _ (log-message "zliu (:executors worker) is " (:executors worker))
+        _ (log-message "zliu executors is " executors) ; (map #(.get-backpressure-flag %1) executors))
+
         transfer-tuples (mk-transfer-tuples-handler worker)
         
         transfer-thread (disruptor/consume-loop* (:transfer-queue worker) transfer-tuples)               
 
-        backpressure-handler (mk-backpressure-handler)        
+        backpressure-handler (mk-backpressure-handler @executors)        
         backpressure-thread (WorkerBackpressureThread. (:backpressure-trigger worker) worker backpressure-handler)
+        _ (log-message "zliu to start backpressure-thread")
         _ (.start backpressure-thread)  ;; TODO: zliu: is it OK that I start it here?
-        callback (fn cb [] 
+        callback (fn cb [& ignored] 
                    (let [throttle-on (.topology-backpressure storm-cluster-state storm-id cb)]
                      (reset! (:throttle-on worker) throttle-on)))
         _ (.topology-backpressure storm-cluster-state storm-id callback)    ;; is this correct???????
@@ -559,19 +571,20 @@
              )
         credentials (atom initial-credentials)
         check-credentials-throttle-changed (fn []
-                                             (let [callback (fn cb [] 
+                                             (let [callback (fn cb [& ignored] 
                                                               (let [throttle-on (.topology-backpressure (:storm-cluster-state worker) storm-id cb)]
                                                                 (reset! (:throttle-on worker) throttle-on)))
-                                                   new-throttle-on (.topology-backpressure (:storm-cluster-state worker) storm-id callback)
+                                                   ;; new-throttle-on (.topology-backpressure (:storm-cluster-state worker) storm-id callback)
                                                    new-creds (.credentials (:storm-cluster-state worker) storm-id nil)]
-                                               (reset! (:throttle-on worker) new-throttle-on)
+                                               ;; (reset! (:throttle-on worker) new-throttle-on)
                                                (when-not (= new-creds @credentials) ;;This does not have to be atomic, worst case we update when one is not needed
                                                  (AuthUtils/updateSubject subject auto-creds new-creds)
                                                  (dofor [e @executors] (.credentials-changed e new-creds))
                                                  (reset! credentials new-creds))))
+       _ (log-message "zliu " check-credentials-throttle-changed)
       ]
     (.credentials (:storm-cluster-state worker) storm-id (fn [args] (check-credentials-throttle-changed)))
-    (schedule-recurring (:refresh-credentials-throttle-timer worker) 0 (conf TASK-CREDENTIALS-POLL-SECS) check-credentials-throttle-changed)
+    (schedule-recurring (:refresh-credentials-timer worker) 0 (conf TASK-CREDENTIALS-POLL-SECS) check-credentials-throttle-changed)
     (schedule-recurring (:refresh-connections-timer worker) 0 (conf TASK-REFRESH-POLL-SECS) refresh-connections)
     (schedule-recurring (:refresh-active-timer worker) 0 (conf TASK-REFRESH-POLL-SECS) (partial refresh-storm-active worker))
 

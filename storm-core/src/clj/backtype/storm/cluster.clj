@@ -411,18 +411,27 @@
         if not exists and to be on?, create; if not exists and not on?, do nothing"
         (let [path (backpressure-path storm-id node port)
               existed (exists-node? cluster-state path false)]
+          (log-message "Inside worker-backpressure!, to do some thing, existed is " existed ", on? is " on?)
           (if existed
             (if (not on?)
-              (delete-node cluster-state path))   ;; delete the znode
+              (do
+                (log-message "zliu deleting for: " storm-id " " node " " port)
+                (delete-node cluster-state path)))   ;; delete the znode
             (if on?  ;;TODO: do we need acls?
-              (set-ephemeral-node cluster-state path (Utils/serialize (Boolean. true)) acls)))))
+              (do
+                (log-message "zliu start creating for: " storm-id " " node " " port)
+                ;; (set-ephemeral-node cluster-state path (Utils/serialize (Boolean. true)) acls)
+                (mkdirs cluster-state path acls)
+                (log-message "zliu finish creating for: " storm-id " " node " " port))))))
     
       (topology-backpressure
         [this storm-id callback]
         (when callback
           (swap! backpressure-callback assoc storm-id callback))
         (let [path (backpressure-storm-root storm-id)
-              children (get-children cluster-state path (not-nil? callback))]
+              children (get-children cluster-state path (not-nil? callback))
+              _ (log-message "zliu found to-back is set?" (> (count children) 0))
+              ]
               (> (count children) 0)))
       
       (setup-backpressure!   ;; who is going to create the topo directory? may be the first worker, will it be ephemeral also?
