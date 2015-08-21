@@ -574,9 +574,9 @@
                                              (let [callback (fn cb [& ignored] 
                                                               (let [throttle-on (.topology-backpressure (:storm-cluster-state worker) storm-id cb)]
                                                                 (reset! (:throttle-on worker) throttle-on)))
-                                                   ;; new-throttle-on (.topology-backpressure (:storm-cluster-state worker) storm-id callback)
+                                                   new-throttle-on (.topology-backpressure (:storm-cluster-state worker) storm-id callback)
                                                    new-creds (.credentials (:storm-cluster-state worker) storm-id nil)]
-                                               ;; (reset! (:throttle-on worker) new-throttle-on)
+                                               (reset! (:throttle-on worker) new-throttle-on)
                                                (when-not (= new-creds @credentials) ;;This does not have to be atomic, worst case we update when one is not needed
                                                  (AuthUtils/updateSubject subject auto-creds new-creds)
                                                  (dofor [e @executors] (.credentials-changed e new-creds))
