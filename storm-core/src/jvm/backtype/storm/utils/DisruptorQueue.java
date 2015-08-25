@@ -150,7 +150,7 @@ public class DisruptorQueue implements IStatefulObject {
     }
 
     /*
-     * Caches until consumerStarted is called, upon which the cache is flushed to the consumgit der
+     * Caches until consumerStarted is called, upon which the cache is flushed to the consumer
      */
     public void publish(Object obj) {
         try {

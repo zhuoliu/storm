@@ -691,13 +691,13 @@
                                 (if (and ((:storm-conf executor-data) TOPOLOGY-BACKPRESSURE-ENABLE) (> (.population receive-queue) high-watermark) (not @(:backpressure executor-data)))
                                   (do (reset! (:backpressure executor-data) true)
                                       (log-message "zliu executor me is congested, set true")
-                                      (DisruptorQueue/notifyBackpressureChecker (:backpressure-trigger (:worker executor-data)))
+                                      ;; (DisruptorQueue/notifyBackpressureChecker (:backpressure-trigger (:worker executor-data)))
+                                      (disruptor/notify-backpressure-checker (:backpressure-trigger (:worker executor-data)))
                                       (log-message "zliu executor " (:executor-id executor-data) " finish notiftBackpressureChecker for setting bckpressure")))
-                                      ;; (disruptor/notify-backpressure-checker (:backpressure-trigger (:worker executor-data)))))
                                 (if (and ((:storm-conf executor-data) TOPOLOGY-BACKPRESSURE-ENABLE) (< (.population receive-queue) low-watermark) @(:backpressure executor-data))
                                   (do (reset! (:backpressure executor-data) false)
-                                      (DisruptorQueue/notifyBackpressureChecker (:backpressure-trigger (:worker executor-data)))))
-                                      ;; (disruptor/notify-backpressure-checker (:backpressure-trigger (:worker executor-data)))))
+                                      (disruptor/notify-backpressure-checker (:backpressure-trigger (:worker executor-data)))))
+                                      ;;(DisruptorQueue/notifyBackpressureChecker (:backpressure-trigger (:worker executor-data)))))
                                 (when sampler?
                                   (.setProcessSampleStartTime tuple now))
                                 (when execute-sampler?
@@ -850,8 +850,8 @@
             ;; this is necessary because rec-q can be 0 while the executor backpressure flag is forever set
             (if (and ((:storm-conf executor-data) TOPOLOGY-BACKPRESSURE-ENABLE) (< (.population receive-queue) low-watermark) @(:backpressure executor-data))
               (do (reset! (:backpressure executor-data) false)
-                  (DisruptorQueue/notifyBackpressureChecker (:backpressure-trigger (:worker executor-data)))))
-                  ;; (disruptor/notify-backpressure-checker (:backpressure-trigger (:worker executor-data)))))
+                  ;;(DisruptorQueue/notifyBackpressureChecker (:backpressure-trigger (:worker executor-data)))))
+                  (disruptor/notify-backpressure-checker (:backpressure-trigger (:worker executor-data)))))
             (disruptor/consume-batch-when-available receive-queue event-handler)
             ;; try to clear the overflow-buffer
             (try-cause
