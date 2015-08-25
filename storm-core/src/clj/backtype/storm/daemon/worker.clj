@@ -141,11 +141,11 @@
         transfer-queue (:transfer-queue worker)
         task->node+port (:cached-task->node+port worker)
         try-serialize-local ((:storm-conf worker) TOPOLOGY-TESTING-ALWAYS-TRY-SERIALIZE)
-        low-watermark  0.10 ; ((:storm-conf worker) BACKPRESSURE-WORKER-LOW-WATERMARK)  ;; TODO: will choose theoretically good defaults later;;
-        high-watermark 0.20 ; ((:storm-conf worker) BACKPRESSURE-WORKER-HIGH-WATERMARK) ;; TODO: define this two in Config.java
+        high-watermark ((:storm-conf worker) BACKPRESSURE-WORKER-HIGH-WATERMARK)
+        low-watermark  ((:storm-conf worker) BACKPRESSURE-WORKER-LOW-WATERMARK)
         transfer-queue-size ((:storm-conf worker) TOPOLOGY-TRANSFER-BUFFER-SIZE)
-        low-watermark (int (* low-watermark transfer-queue-size))
         high-watermark (int (* high-watermark transfer-queue-size))
+        low-watermark (int (* low-watermark transfer-queue-size))
 
         transfer-fn
           (fn [^KryoTupleSerializer serializer tuple-batch]
@@ -168,7 +168,7 @@
               ;; however, when the backpressure is set, the worker still need to check whether all the executor's setting hsa cleared to unset worker's backpressure
               ;; (check-executors-backpressure worker)
               (log-message "zliu: worker trans-q size now is:  " (.population transfer-queue))
-              (if (> (.population transfer-queue) high-watermark)
+              (if (and ((:storm-conf worker) TOPOLOGY-BACKPRESSURE-ENABLE) (> (.population transfer-queue) high-watermark))
                 (do (reset! (:backpressure worker) true)
                     (DisruptorQueue/notifyBackpressureChecker (:backpressure-trigger worker))))  ;; set backpressure no matter how the executors are  
 
@@ -505,11 +505,13 @@
         backpressure-handler (mk-backpressure-handler @executors)        
         backpressure-thread (WorkerBackpressureThread. (:backpressure-trigger worker) worker backpressure-handler)
         _ (log-message "zliu to start backpressure-thread")
-        _ (.start backpressure-thread)  ;; TODO: zliu: is it OK that I start it here?
-        callback (fn cb [& ignored] 
+        _ (if ((:storm-conf worker) TOPOLOGY-BACKPRESSURE-ENABLE) 
+            (.start backpressure-thread))  ;; TODO: zliu: is it OK that I start it here?
+        callback (fn cb [& ignored]
                    (let [throttle-on (.topology-backpressure storm-cluster-state storm-id cb)]
                      (reset! (:throttle-on worker) throttle-on)))
-        _ (.topology-backpressure storm-cluster-state storm-id callback)    ;; is this correct???????
+        _ (if ((:storm-conf worker) TOPOLOGY-BACKPRESSURE-ENABLE)
+            (.topology-backpressure storm-cluster-state storm-id callback))
 
         shutdown* (fn []
                     (log-message "Shutting down worker " storm-id " " assignment-id " " port)
@@ -574,9 +576,11 @@
                                              (let [callback (fn cb [& ignored] 
                                                               (let [throttle-on (.topology-backpressure (:storm-cluster-state worker) storm-id cb)]
                                                                 (reset! (:throttle-on worker) throttle-on)))
-                                                   new-throttle-on (.topology-backpressure (:storm-cluster-state worker) storm-id callback)
+                                                   new-throttle-on (if ((:storm-conf worker) TOPOLOGY-BACKPRESSURE-ENABLE)
+                                                                     (.topology-backpressure (:storm-cluster-state worker) storm-id callback) nil)
                                                    new-creds (.credentials (:storm-cluster-state worker) storm-id nil)]
-                                               (reset! (:throttle-on worker) new-throttle-on)
+                                               (if ((:storm-conf worker) TOPOLOGY-BACKPRESSURE-ENABLE)
+                                                 (reset! (:throttle-on worker) new-throttle-on))
                                                (when-not (= new-creds @credentials) ;;This does not have to be atomic, worst case we update when one is not needed
                                                  (AuthUtils/updateSubject subject auto-creds new-creds)
                                                  (dofor [e @executors] (.credentials-changed e new-creds))
