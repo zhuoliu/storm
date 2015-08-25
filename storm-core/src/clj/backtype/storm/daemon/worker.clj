@@ -122,18 +122,13 @@
             assignment-id (:assignment-id worker)
             port (:port worker)
             storm-cluster-state (:storm-cluster-state worker)]
-        (log-message "zliu I am now in backpressure-handler (callback), executors is " executors) ; (map #(.get-backpressure-flag %1) executors))
-        (doseq [ed executors] 
-          (log-message "zliu executor" (.get-executor-id ed) " flag is " (.get-backpressure-flag ed)))
         (if executors 
           (if (reduce #(or %1 %2) (map #(.get-backpressure-flag %1) executors))
             (reset! (:backpressure worker) true)   ;; at least one executor has set backpressure
-            (reset! (:backpressure worker) false)))
-        (log-message "zliu I am now in backpressure-handler, worker flag is " @(:backpressure worker))
+            (reset! (:backpressure worker) false))) ;; no executor has backpressure set
         ;; update the worker's backpressure flag to zookeeper here
-        (if @(:backpressure worker) (log-message "zliu Found executor congested, setting worker's backpressure flag"))
-        (.worker-backpressure! storm-cluster-state storm-id assignment-id port @(:backpressure worker))  ;; TODO: swap! we may check and update to avoid un-ness updates to ZK
-        ))))  ;; all executors have backpressure unset
+        (.worker-backpressure! storm-cluster-state storm-id assignment-id port @(:backpressure worker))  
+        ))))
 
 (defn mk-transfer-fn [worker]
   (let [local-tasks (-> worker :task-ids set)
@@ -167,7 +162,6 @@
               ;; each executor itself will do the self setting for the worker's backpressure tag
               ;; however, when the backpressure is set, the worker still need to check whether all the executor's setting hsa cleared to unset worker's backpressure
               ;; (check-executors-backpressure worker)
-              (log-message "zliu: worker trans-q size now is:  " (.population transfer-queue))
               (if (and ((:storm-conf worker) TOPOLOGY-BACKPRESSURE-ENABLE) (> (.population transfer-queue) high-watermark))
                 (do (reset! (:backpressure worker) true)
                     (DisruptorQueue/notifyBackpressureChecker (:backpressure-trigger worker))))  ;; set backpressure no matter how the executors are  
@@ -492,21 +486,14 @@
 
         _ (reset! executors (dofor [e (:executors worker)] (executor/mk-executor worker e initial-credentials)))
 
-        _ (log-message "zliu executors is " executors ", executors count is " (count @executors))
-        _ (log-message "zliu first exe id is " (.get-executor-id (first (vec @executors))))
-        _ (log-message "zliu first exe flag is " (.get-backpressure-flag (first (vec @executors))))
-        _ (log-message "zliu (:executors worker) is " (:executors worker))
-        _ (log-message "zliu executors is " executors) ; (map #(.get-backpressure-flag %1) executors))
-
         transfer-tuples (mk-transfer-tuples-handler worker)
         
         transfer-thread (disruptor/consume-loop* (:transfer-queue worker) transfer-tuples)               
 
         backpressure-handler (mk-backpressure-handler @executors)        
         backpressure-thread (WorkerBackpressureThread. (:backpressure-trigger worker) worker backpressure-handler)
-        _ (log-message "zliu to start backpressure-thread")
         _ (if ((:storm-conf worker) TOPOLOGY-BACKPRESSURE-ENABLE) 
-            (.start backpressure-thread))  ;; TODO: zliu: is it OK that I start it here?
+            (.start backpressure-thread))
         callback (fn cb [& ignored]
                    (let [throttle-on (.topology-backpressure storm-cluster-state storm-id cb)]
                      (reset! (:throttle-on worker) throttle-on)))
@@ -584,9 +571,7 @@
                                                (when-not (= new-creds @credentials) ;;This does not have to be atomic, worst case we update when one is not needed
                                                  (AuthUtils/updateSubject subject auto-creds new-creds)
                                                  (dofor [e @executors] (.credentials-changed e new-creds))
-                                                 (reset! credentials new-creds))))
-       _ (log-message "zliu " check-credentials-throttle-changed)
-      ]
+                                                 (reset! credentials new-creds))))]
     (.credentials (:storm-cluster-state worker) storm-id (fn [args] (check-credentials-throttle-changed)))
     (schedule-recurring (:refresh-credentials-timer worker) 0 (conf TASK-CREDENTIALS-POLL-SECS) check-credentials-throttle-changed)
     (schedule-recurring (:refresh-connections-timer worker) 0 (conf TASK-REFRESH-POLL-SECS) refresh-connections)

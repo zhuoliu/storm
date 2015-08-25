@@ -83,22 +83,14 @@
 
      (set-ephemeral-node
        [this path data acls]
-       ;; (log-message "zliu start in set-ephe for " (parent-path path))
        (zk/mkdirs zk (parent-path path) acls)
-       ;; (log-message "zliu start in set-ephe, after mkdirs for parent of " path "exists is " (zk/exists zk path false))
        (if (zk/exists zk path false)
          (try-cause
            (zk/set-data zk path data) ; should verify that it's ephemeral
            (catch KeeperException$NoNodeException e
              (log-warn-error e "Ephemeral node disappeared between checking for existing and setting data")
              (zk/create-node zk path data :ephemeral acls)))
-         (do 
-             ;;(log-message "zliu before create-node for " path)
-             (zk/create-node zk path data :ephemeral acls) 
-             ;;(log-message "zliu finish create-node for " path)
-             ))
-       ;;(log-message "zliu end in set-ephe")
-       )
+         (zk/create-node zk path data :ephemeral acls)))
 
      (create-sequential
        [this path data acls]
@@ -419,31 +411,22 @@
         if not exists and to be on?, create; if not exists and not on?, do nothing"
         (let [path (backpressure-path storm-id node port)
               existed (exists-node? cluster-state path false)]
-          (log-message "Inside worker-backpressure!, to do some thing, existed is " existed ", on? is " on?)
           (if existed
             (if (not on?)
-              (do
-                (log-message "zliu deleting for: " storm-id " " node " " port)
-                (delete-node cluster-state path)))   ;; delete the znode
-            (if on?  ;;TODO: do we need acls?
-              (do
-                (log-message "zliu start creating for: " storm-id " " node " " port)
-                ;; (set-ephemeral-node cluster-state path (Utils/serialize (Boolean. true)) acls)
-                (set-ephemeral-node cluster-state path nil acls)
-                ;; (mkdirs cluster-state path acls)
-                (log-message "zliu finish creating for: " storm-id " " node " " port))))))
+              (delete-node cluster-state path))   ;; delete the znode since the worker is not congested
+            (if on?
+              (set-ephemeral-node cluster-state path nil acls))))) ;; create the znode since worker is congested
     
       (topology-backpressure
         [this storm-id callback]
+        "if the backpresure/storm-id dir is empty, this topology has throttle-on, otherwise not."
         (when callback
           (swap! backpressure-callback assoc storm-id callback))
         (let [path (backpressure-storm-root storm-id)
-              children (get-children cluster-state path (not-nil? callback))
-              _ (log-message "zliu found to-back is set?" (> (count children) 0))
-              ]
+              children (get-children cluster-state path (not-nil? callback))]
               (> (count children) 0)))
       
-      (setup-backpressure!   ;; who is going to create the topo directory? may be the first worker, will it be ephemeral also?
+      (setup-backpressure!
         [this storm-id]
         (mkdirs cluster-state (backpressure-storm-root storm-id) acls))
 

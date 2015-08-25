@@ -608,9 +608,9 @@
                
                   (if (and ((:storm-conf executor-data) TOPOLOGY-BACKPRESSURE-ENABLE) @(:throttle-on (:worker executor-data)))
                     (do 
-                      (log-message "zliu, spout executor " (:executor-id executor-data) " found throttle-on, begin to suspend sending tuples")
-                      (Time/sleep 100)  ;; automatic backpressure for flow control; TODO: log or write to some metrics for stats
-                      )
+                      (log-debug "Spout executor " (:executor-id executor-data) " found throttle-on, now suspends sending tuples")
+                      (log-message "zliu Spout executor " (:executor-id executor-data) " found throttle-on, now suspends sending tuples")
+                      (Time/sleep 100))  ;; automatic backpressure for flow control; TODO: log or write to some metrics for stats
                     (fast-list-iter [^ISpout spout spouts] (.nextTuple spout))))
                 (do
                   (when @last-active
@@ -687,17 +687,17 @@
                                     execute-sampler? (execute-sampler)
                                     now (if (or sampler? execute-sampler?) (System/currentTimeMillis))
                                     receive-queue (:receive-queue executor-data)]
-                                (log-message "zliu: excutor " (:executor-id executor-data) " size now is:  " (.population receive-queue) " high-wm is " high-watermark)
-                                (if (and ((:storm-conf executor-data) TOPOLOGY-BACKPRESSURE-ENABLE) (> (.population receive-queue) high-watermark) (not @(:backpressure executor-data)))
+                                (if (and ((:storm-conf executor-data) TOPOLOGY-BACKPRESSURE-ENABLE) 
+                                         (> (.population receive-queue) high-watermark) 
+                                         (not @(:backpressure executor-data)))
                                   (do (reset! (:backpressure executor-data) true)
-                                      (log-message "zliu executor me is congested, set true")
-                                      ;; (DisruptorQueue/notifyBackpressureChecker (:backpressure-trigger (:worker executor-data)))
-                                      (disruptor/notify-backpressure-checker (:backpressure-trigger (:worker executor-data)))
-                                      (log-message "zliu executor " (:executor-id executor-data) " finish notiftBackpressureChecker for setting bckpressure")))
-                                (if (and ((:storm-conf executor-data) TOPOLOGY-BACKPRESSURE-ENABLE) (< (.population receive-queue) low-watermark) @(:backpressure executor-data))
+                                      (log-debug "executor " (:executor-id executor-data) " is congested, set backpressure flag true")
+                                      (disruptor/notify-backpressure-checker (:backpressure-trigger (:worker executor-data)))))
+                                (if (and ((:storm-conf executor-data) TOPOLOGY-BACKPRESSURE-ENABLE) 
+                                         (< (.population receive-queue) low-watermark) 
+                                         @(:backpressure executor-data))
                                   (do (reset! (:backpressure executor-data) false)
                                       (disruptor/notify-backpressure-checker (:backpressure-trigger (:worker executor-data)))))
-                                      ;;(DisruptorQueue/notifyBackpressureChecker (:backpressure-trigger (:worker executor-data)))))
                                 (when sampler?
                                   (.setProcessSampleStartTime tuple now))
                                 (when execute-sampler?
@@ -844,13 +844,10 @@
               high-watermark (int (* high-watermark receive-queue-size))
               low-watermark (int (* low-watermark receive-queue-size))]
           (disruptor/consumer-started! receive-queue)
-          (log-message "zliu: async-loop excutor rec-q size now is:  " (.population receive-queue))
           (fn []            
-            (log-message "zliu, to call consume-batch-when-available in " (:executor-id executor-data) " q size is " (.population receive-queue))
-            ;; this is necessary because rec-q can be 0 while the executor backpressure flag is forever set
+            ;; this additional check is necessary because rec-q can be 0 while the executor backpressure flag is forever set
             (if (and ((:storm-conf executor-data) TOPOLOGY-BACKPRESSURE-ENABLE) (< (.population receive-queue) low-watermark) @(:backpressure executor-data))
               (do (reset! (:backpressure executor-data) false)
-                  ;;(DisruptorQueue/notifyBackpressureChecker (:backpressure-trigger (:worker executor-data)))))
                   (disruptor/notify-backpressure-checker (:backpressure-trigger (:worker executor-data)))))
             (disruptor/consume-batch-when-available receive-queue event-handler)
             ;; try to clear the overflow-buffer
