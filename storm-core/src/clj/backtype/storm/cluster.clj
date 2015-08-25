@@ -83,14 +83,22 @@
 
      (set-ephemeral-node
        [this path data acls]
+       (log-message "zliu start in set-ephe for " (parent-path path))
        (zk/mkdirs zk (parent-path path) acls)
+       (log-message "zliu start in set-ephe, after mkdirs for parent of " path "exists is " (zk/exists zk path false))
        (if (zk/exists zk path false)
          (try-cause
            (zk/set-data zk path data) ; should verify that it's ephemeral
            (catch KeeperException$NoNodeException e
              (log-warn-error e "Ephemeral node disappeared between checking for existing and setting data")
              (zk/create-node zk path data :ephemeral acls)))
-         (zk/create-node zk path data :ephemeral acls)))
+         (do 
+             (log-message "zliu before create-node for " path)
+             (zk/create-node zk path data :ephemeral acls) 
+             (log-message "zliu finish create-node for " path)
+             ))
+       (log-message "zliu end in set-ephe")
+       )
 
      (create-sequential
        [this path data acls]
@@ -421,7 +429,8 @@
               (do
                 (log-message "zliu start creating for: " storm-id " " node " " port)
                 ;; (set-ephemeral-node cluster-state path (Utils/serialize (Boolean. true)) acls)
-                (mkdirs cluster-state path acls)
+                (set-ephemeral-node cluster-state path nil acls)
+                ;; (mkdirs cluster-state path acls)
                 (log-message "zliu finish creating for: " storm-id " " node " " port))))))
     
       (topology-backpressure

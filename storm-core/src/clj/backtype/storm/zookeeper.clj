@@ -87,9 +87,12 @@
 (defn create-node
   ([^CuratorFramework zk ^String path ^bytes data mode acls]
     (let [mode  (zk-create-modes mode)]
+      (log-message "zliu in create-node for mode " mode ", path is " path)
       (try
         (.. zk (create) (creatingParentsIfNeeded) (withMode mode) (withACL acls) (forPath (normalize-path path) data))
-        (catch Exception e (throw (wrap-in-runtime e))))))
+        (catch Exception e (throw (wrap-in-runtime e))))
+      (log-message "zliu end of create-node for mode " mode ", path is " path)
+      ))
   ([^CuratorFramework zk ^String path ^bytes data acls]
     (create-node zk path data :persistent acls)))
 
