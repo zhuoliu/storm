@@ -19,7 +19,7 @@
   (:use [backtype.storm testing config])
   (:use [backtype.storm.daemon common])
   (:require [backtype.storm [thrift :as thrift]]))
-(comment
+
 (deftest test-local-transport
   (doseq [transport-on? [false true]] 
     (with-simulated-time-local-cluster [cluster :supervisors 1 :ports-per-supervisor 2
@@ -87,4 +87,3 @@
         
         ;; No error Tuple from Bolt TestEventOrderCheckBolt
         (is (empty? (read-tuples results "2"))))))
-)

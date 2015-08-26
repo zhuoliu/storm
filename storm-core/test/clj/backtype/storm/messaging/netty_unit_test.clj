@@ -29,7 +29,6 @@
 ;; commence testing.  If we don't do this, then we will lose the first messages being sent between the client and the
 ;; server, which will fail the tests.
 
-(comment
 (defn- wait-until-ready
   ([connections]
       (do (log-message "Waiting until all Netty connections are ready...")
@@ -133,4 +132,3 @@
     (.close client)
     (.close server)
     (.term context)))
-)

@@ -20,7 +20,6 @@
   (:use [backtype.storm testing util config])
   (:require [backtype.storm [thrift :as thrift]]))
 
-(comment
 (deftest test-integration
   (with-simulated-time-local-cluster [cluster :supervisors 4 :supervisor-slot-port-min 6710
                                       :daemon-conf {STORM-LOCAL-MODE-ZMQ true 
@@ -57,4 +56,3 @@
                                      )]
       (is (ms= (apply concat (repeat 6 [[1] [2] [3] [4]]))
                (read-tuples results "2"))))))
-)
