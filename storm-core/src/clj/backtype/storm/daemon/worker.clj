@@ -160,16 +160,11 @@
                         (log-warn "Can't transfer tuple - task value is nil. tuple type: " (pr-str (type tuple)) " and information: " (pr-str tuple)))
                      ))))
               ;; each executor itself will do the self setting for the worker's backpressure tag
-              ;; however, when the backpressure is set, the worker still need to check whether all the executor's setting hsa cleared to unset worker's backpressure
-              ;; (check-executors-backpressure worker)
+              ;; however, when the backpressure is set, the worker still need to check whether all the executors' flag has cleared to unset worker's backpressure
               (if (and ((:storm-conf worker) TOPOLOGY-BACKPRESSURE-ENABLE) (> (.population transfer-queue) high-watermark))
                 (do (reset! (:backpressure worker) true)
                     (DisruptorQueue/notifyBackpressureChecker (:backpressure-trigger worker))))  ;; set backpressure no matter how the executors are  
 
-              ;(if (not @(:backpressure worker)) ;; only when the worker's backpressure is not set need we check the executor's flags
-              ;  )
-              ; (if (< (.population transfer-queue) low-watermark)
-              ;  (reset! (:backpressure worker) false))             ;; TODO TODO !!!: this should also depend on executor's backpressure flags
               (local-transfer local)
               (disruptor/publish transfer-queue remoteMap)))]
     (if try-serialize-local

@@ -608,8 +608,7 @@
                
                   (if (and ((:storm-conf executor-data) TOPOLOGY-BACKPRESSURE-ENABLE) @(:throttle-on (:worker executor-data)))
                     (do 
-                      (log-debug "Spout executor " (:executor-id executor-data) " found throttle-on, now suspends sending tuples")
-                      (log-message "zliu Spout executor " (:executor-id executor-data) " found throttle-on, now suspends sending tuples")
+                      (log-message "Spout executor " (:executor-id executor-data) " found throttle-on, now suspends sending tuples")
                       (Time/sleep 100))  ;; automatic backpressure for flow control; TODO: log or write to some metrics for stats
                     (fast-list-iter [^ISpout spout spouts] (.nextTuple spout))))
                 (do
