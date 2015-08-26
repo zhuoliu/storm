@@ -595,7 +595,8 @@
             ))
           
           (let [active? @(:storm-active-atom executor-data)
-                curr-count (.get emitted-count)]
+                curr-count (.get emitted-count)
+                suspend-time ((:storm-conf executor-data) BACKPRESSURE-SPOUT-SUSPEND-TIME-MS)]
             (if (and (.isEmpty overflow-buffer)
                      (or (not max-spout-pending)
                          (< (.size pending) max-spout-pending)))
@@ -606,10 +607,14 @@
                     (log-message "Activating spout " component-id ":" (keys task-datas))
                     (fast-list-iter [^ISpout spout spouts] (.activate spout)))
                
-                  (if (and ((:storm-conf executor-data) TOPOLOGY-BACKPRESSURE-ENABLE) @(:throttle-on (:worker executor-data)))
+                  (if (and
+                        ((:storm-conf executor-data) TOPOLOGY-BACKPRESSURE-ENABLE)
+                        @(:throttle-on (:worker executor-data))
+                        suspend-time
+                        (not= suspend-time 0))
                     (do 
                       (log-message "Spout executor " (:executor-id executor-data) " found throttle-on, now suspends sending tuples")
-                      (Time/sleep 100))  ;; automatic backpressure for flow control; TODO: log or write to some metrics for stats
+                      (Time/sleep suspend-time))  ;; automatic backpressure for flow control; TODO: log or write to some metrics for stats
                     (fast-list-iter [^ISpout spout spouts] (.nextTuple spout))))
                 (do
                   (when @last-active
