@@ -33,7 +33,6 @@ import storm.starter.spout.RandomSentenceSpout;
 
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Random;
 
 /**
  * This topology demonstrates Storm's stream groupings and multilang capabilities.
@@ -67,15 +66,6 @@ public class WordCountTopology {
         count = 0;
       count++;
       counts.put(word, count);
-      long time = System.currentTimeMillis();
-      try {
-        //int rand = new Random().nextInt();
-        //if (rand % 10 == 1) {  // this executor 17% possibility causing congestion
-        if (time/30000 %2 == 0) Thread.sleep(50); //every one minute is a cycle (half congestion half not)
-        //}
-      } catch (InterruptedException e) {
-        e.printStackTrace();
-      }
       collector.emit(new Values(word, count));
     }
 
@@ -96,7 +86,6 @@ public class WordCountTopology {
 
     Config conf = new Config();
     conf.setDebug(true);
-
 
 
     if (args != null && args.length > 0) {
