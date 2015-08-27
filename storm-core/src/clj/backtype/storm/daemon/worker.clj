@@ -121,19 +121,21 @@
       (let [storm-id (:storm-id worker)
             assignment-id (:assignment-id worker)
             port (:port worker)
-            storm-cluster-state (:storm-cluster-state worker)]
+            storm-cluster-state (:storm-cluster-state worker)
+            prev-backpressure-flag @(:backpressure worker)]
         (if executors 
           (if (reduce #(or %1 %2) (map #(.get-backpressure-flag %1) executors))
             (reset! (:backpressure worker) true)   ;; at least one executor has set backpressure
             (reset! (:backpressure worker) false))) ;; no executor has backpressure set
-        ;; update the worker's backpressure flag to zookeeper here
-        (.worker-backpressure! storm-cluster-state storm-id assignment-id port @(:backpressure worker))  
+        ;; update the worker's backpressure flag to zookeeper only when it has changed
+        (if (not= prev-backpressure-flag @(:backpressure worker))
+          (.worker-backpressure! storm-cluster-state storm-id assignment-id port @(:backpressure worker)))
         ))))
 
 (defn mk-transfer-fn [worker]
   (let [local-tasks (-> worker :task-ids set)
         local-transfer (:transfer-local-fn worker)
-        transfer-queue (:transfer-queue worker)
+        ^DisruptorQueue transfer-queue (:transfer-queue worker)
         task->node+port (:cached-task->node+port worker)
         try-serialize-local ((:storm-conf worker) TOPOLOGY-TESTING-ALWAYS-TRY-SERIALIZE)
         high-watermark ((:storm-conf worker) BACKPRESSURE-WORKER-HIGH-WATERMARK)
@@ -161,7 +163,8 @@
                      ))))
               ;; each executor itself will do the self setting for the worker's backpressure tag
               ;; however, when the backpressure is set, the worker still need to check whether all the executors' flag has cleared to unset worker's backpressure
-              (if (and ((:storm-conf worker) TOPOLOGY-BACKPRESSURE-ENABLE) (> (.population transfer-queue) high-watermark))
+              (if (and ((:storm-conf worker) TOPOLOGY-BACKPRESSURE-ENABLE)
+                    (> (.population transfer-queue) high-watermark))
                 (do (reset! (:backpressure worker) true)
                     (DisruptorQueue/notifyBackpressureChecker (:backpressure-trigger worker))))  ;; set backpressure no matter how the executors are  
 
@@ -554,21 +557,24 @@
                  ))
              )
         credentials (atom initial-credentials)
-        check-credentials-throttle-changed (fn []
-                                             (let [callback (fn cb [& ignored] 
-                                                              (let [throttle-on (.topology-backpressure (:storm-cluster-state worker) storm-id cb)]
-                                                                (reset! (:throttle-on worker) throttle-on)))
-                                                   new-throttle-on (if ((:storm-conf worker) TOPOLOGY-BACKPRESSURE-ENABLE)
-                                                                     (.topology-backpressure (:storm-cluster-state worker) storm-id callback) nil)
-                                                   new-creds (.credentials (:storm-cluster-state worker) storm-id nil)]
-                                               (if ((:storm-conf worker) TOPOLOGY-BACKPRESSURE-ENABLE)
-                                                 (reset! (:throttle-on worker) new-throttle-on))
-                                               (when-not (= new-creds @credentials) ;;This does not have to be atomic, worst case we update when one is not needed
-                                                 (AuthUtils/updateSubject subject auto-creds new-creds)
-                                                 (dofor [e @executors] (.credentials-changed e new-creds))
-                                                 (reset! credentials new-creds))))]
-    (.credentials (:storm-cluster-state worker) storm-id (fn [args] (check-credentials-throttle-changed)))
-    (schedule-recurring (:refresh-credentials-timer worker) 0 (conf TASK-CREDENTIALS-POLL-SECS) check-credentials-throttle-changed)
+        check-credentials-changed (fn []
+                                    (let [new-creds (.credentials (:storm-cluster-state worker) storm-id nil)]
+                                      (when-not (= new-creds @credentials) ;;This does not have to be atomic, worst case we update when one is not needed
+                                        (AuthUtils/updateSubject subject auto-creds new-creds)
+                                        (dofor [e @executors] (.credentials-changed e new-creds))
+                                        (reset! credentials new-creds))))
+       check-throttle-changed (fn []
+                                (let [callback (fn cb [& ignored]
+                                                 (let [throttle-on (.topology-backpressure (:storm-cluster-state worker) storm-id cb)]
+                                                   (reset! (:throttle-on worker) throttle-on)))
+                                      new-throttle-on (.topology-backpressure (:storm-cluster-state worker) storm-id callback)]
+                                    (reset! (:throttle-on worker) new-throttle-on)))]
+    (.credentials (:storm-cluster-state worker) storm-id (fn [args] (check-credentials-changed)))
+    (schedule-recurring (:refresh-credentials-timer worker) 0 (conf TASK-CREDENTIALS-POLL-SECS)
+                        (fn [& args]
+                          (check-credentials-changed)
+                          (if ((:storm-conf worker) TOPOLOGY-BACKPRESSURE-ENABLE)
+                            (check-throttle-changed))))
     (schedule-recurring (:refresh-connections-timer worker) 0 (conf TASK-REFRESH-POLL-SECS) refresh-connections)
     (schedule-recurring (:refresh-active-timer worker) 0 (conf TASK-REFRESH-POLL-SECS) (partial refresh-storm-active worker))
 

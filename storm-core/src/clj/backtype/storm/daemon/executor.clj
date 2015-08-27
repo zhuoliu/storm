@@ -596,10 +596,17 @@
           
           (let [active? @(:storm-active-atom executor-data)
                 curr-count (.get emitted-count)
-                suspend-time ((:storm-conf executor-data) BACKPRESSURE-SPOUT-SUSPEND-TIME-MS)]
+                ;; suspend-time ((:storm-conf executor-data) BACKPRESSURE-SPOUT-SUSPEND-TIME-MS)
+                backpressure-enabled ((:storm-conf executor-data) TOPOLOGY-BACKPRESSURE-ENABLE)
+                throttle-on @(:throttle-on (:worker executor-data))]
+                ;; zliu TODO calculate nd update the metrics for backpressure, spout-pending, activeness, etcs here
+            (if (and backpressure-enabled throttle-on)
+              (log-message "zliu Spout executor " (:executor-id executor-data) " found throttle-on, now suspends sending tuples"))
             (if (and (.isEmpty overflow-buffer)
                      (or (not max-spout-pending)
-                         (< (.size pending) max-spout-pending)))
+                         (< (.size pending) max-spout-pending))
+                     (or (not backpressure-enabled)
+                         (and backpressure-enabled (not throttle-on))))
               (if active?
                 (do
                   (when-not @last-active
@@ -607,15 +614,9 @@
                     (log-message "Activating spout " component-id ":" (keys task-datas))
                     (fast-list-iter [^ISpout spout spouts] (.activate spout)))
                
-                  (if (and
-                        ((:storm-conf executor-data) TOPOLOGY-BACKPRESSURE-ENABLE)
-                        @(:throttle-on (:worker executor-data))
-                        suspend-time
-                        (not= suspend-time 0))
-                    (do 
-                      (log-message "Spout executor " (:executor-id executor-data) " found throttle-on, now suspends sending tuples")
-                      (Time/sleep suspend-time))  ;; automatic backpressure for flow control; TODO: log or write to some metrics for stats
-                    (fast-list-iter [^ISpout spout spouts] (.nextTuple spout))))
+                    ;; (log-message "Spout executor " (:executor-id executor-data) " found throttle-on, now suspends sending tuples")
+                    ;; (Time/sleep suspend-time))  ;; automatic backpressure for flow control; TODO: log or write to some metrics for stats
+                  (fast-list-iter [^ISpout spout spouts] (.nextTuple spout)))
                 (do
                   (when @last-active
                     (reset! last-active false)
@@ -691,7 +692,7 @@
                                     execute-sampler? (execute-sampler)
                                     now (if (or sampler? execute-sampler?) (System/currentTimeMillis))
                                     receive-queue (:receive-queue executor-data)]
-                                (if (and ((:storm-conf executor-data) TOPOLOGY-BACKPRESSURE-ENABLE) 
+                                (if (and ((:storm-conf executor-data) TOPOLOGY-BACKPRESSURE-ENABLE)
                                          (> (.population receive-queue) high-watermark) 
                                          (not @(:backpressure executor-data)))
                                   (do (reset! (:backpressure executor-data) true)
@@ -850,7 +851,8 @@
           (disruptor/consumer-started! receive-queue)
           (fn []            
             ;; this additional check is necessary because rec-q can be 0 while the executor backpressure flag is forever set
-            (if (and ((:storm-conf executor-data) TOPOLOGY-BACKPRESSURE-ENABLE) (< (.population receive-queue) low-watermark) @(:backpressure executor-data))
+            (if (and ((:storm-conf executor-data) TOPOLOGY-BACKPRESSURE-ENABLE) 
+                  (< (.population receive-queue) low-watermark) @(:backpressure executor-data))
               (do (reset! (:backpressure executor-data) false)
                   (disruptor/notify-backpressure-checker (:backpressure-trigger (:worker executor-data)))))
             (disruptor/consume-batch-when-available receive-queue event-handler)

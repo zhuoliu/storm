@@ -1066,12 +1066,6 @@ public class Config extends HashMap<String, Object> {
     public static final Object BACKPRESSURE_EXECUTOR_LOW_WATERMARK_SCHEMA =ConfigValidation.PositiveNumberValidator;
 
     /**
-     * The amount of milliseconds when the spouts should suspend from sending tuples once backpressure is activated.
-     */
-    public static final String BACKPRESSURE_SPOUT_SUSPEND_TIME_MS="backpressure.spout.suspend.time.ms";
-    public static final Object BACKPRESSURE_SPOUT_SUSPEND_TIME_MS_SCHEMA = ConfigValidation.IntegerValidator;
-
-    /**
      * A list of users that are allowed to interact with the topology.  To use this set
      * nimbus.authorizer to backtype.storm.security.auth.authorizer.SimpleACLAuthorizer
      */

@@ -146,7 +146,6 @@ backpressure.worker.high.watermark: 0.9
 backpressure.worker.low.watermark: 0.4
 backpressure.executor.high.watermark: 0.9
 backpressure.executor.low.watermark: 0.4
-backpressure.spout.suspend.time.ms: 100
 
 zmq.threads: 1
 zmq.linger.millis: 5000
