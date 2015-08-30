@@ -123,6 +123,8 @@
             port (:port worker)
             storm-cluster-state (:storm-cluster-state worker)
             prev-backpressure-flag @(:backpressure worker)]
+        (doseq [ed executors] ;; Debug, TODO: delete
+          (log-message "zliu executor" (.get-executor-id ed) " flag is " (.get-backpressure-flag ed)))
         (if executors 
           (if (reduce #(or %1 %2) (map #(.get-backpressure-flag %1) executors))
             (reset! (:backpressure worker) true)   ;; at least one executor has set backpressure
@@ -164,8 +166,10 @@
               ;; each executor itself will do the self setting for the worker's backpressure tag
               ;; however, when the backpressure is set, the worker still need to check whether all the executors' flag has cleared to unset worker's backpressure
               (if (and ((:storm-conf worker) TOPOLOGY-BACKPRESSURE-ENABLE)
-                    (> (.population transfer-queue) high-watermark))
+                    (> (.population transfer-queue) high-watermark)
+                    (not @(:backpressure worker)))
                 (do (reset! (:backpressure worker) true)
+                    (log-message "zliu worker itself found tranfer queue congested, set flag true")
                     (DisruptorQueue/notifyBackpressureChecker (:backpressure-trigger worker))))  ;; set backpressure no matter how the executors are  
 
               (local-transfer local)
