@@ -263,6 +263,9 @@
      :deserializer (KryoTupleDeserializer. storm-conf worker-context)
      :sampler (mk-stats-sampler storm-conf)
      :backpressure (atom false)
+     :spout-throttling-metrics (if (= executor-type :spout) 
+                                (builtin-metrics/make-spout-throttling-data)
+                                nil)
      ;; TODO: add in the executor-specific stuff in a :specific... or make a spout-data, bolt-data function?
      )))
 
@@ -511,6 +514,7 @@
           (Thread/sleep 100))
         
         (log-message "Opening spout " component-id ":" (keys task-datas))
+        (builtin-metrics/register-spout-throttling-metrics (:spout-throttling-metrics executor-data) storm-conf (:user-context (first (vals task-datas))))
         (doseq [[task-id task-data] task-datas
                 :let [^ISpout spout-obj (:object task-data)
                      tasks-fn (:tasks-fn task-data)
@@ -598,15 +602,17 @@
                 curr-count (.get emitted-count)
                 ;; suspend-time ((:storm-conf executor-data) BACKPRESSURE-SPOUT-SUSPEND-TIME-MS)
                 backpressure-enabled ((:storm-conf executor-data) TOPOLOGY-BACKPRESSURE-ENABLE)
-                throttle-on @(:throttle-on (:worker executor-data))]
-                ;; zliu TODO calculate nd update the metrics for backpressure, spout-pending, activeness, etcs here
+                throttle-on (and backpressure-enabled
+                              @(:throttle-on (:worker executor-data)))
+                reached-max-spout-pending (and max-spout-pending
+                                               (>= (.size pending) max-spout-pending))
+                ]
+                ;; zliu TODO calculate nd update the metrics for backpressure, spout-pending, activeness, etcs here 
             (if (and backpressure-enabled throttle-on)  ;; debug, TODO: delete
               (log-message "zliu Spout executor " (:executor-id executor-data) " found throttle-on, now suspends sending tuples"))
             (if (and (.isEmpty overflow-buffer)
-                     (or (not max-spout-pending)
-                         (< (.size pending) max-spout-pending))
-                     (or (not backpressure-enabled)
-                         (and backpressure-enabled (not throttle-on))))
+                     (not throttle-on)
+                     (not reached-max-spout-pending))
               (if active?
                 (do
                   (when-not @last-active
@@ -615,7 +621,6 @@
                     (fast-list-iter [^ISpout spout spouts] (.activate spout)))
                
                     ;; (log-message "Spout executor " (:executor-id executor-data) " found throttle-on, now suspends sending tuples")
-                    ;; (Time/sleep suspend-time))  ;; automatic backpressure for flow control; TODO: log or write to some metrics for stats
                   (fast-list-iter [^ISpout spout spouts] (.nextTuple spout)))
                 (do
                   (when @last-active
@@ -623,10 +628,16 @@
                     (log-message "Deactivating spout " component-id ":" (keys task-datas))
                     (fast-list-iter [^ISpout spout spouts] (.deactivate spout)))
                   ;; TODO: log that it's getting throttled
-                  (Time/sleep 100))))
+                  (Time/sleep 100)
+                  (builtin-metrics/skipped-inactive! (:spout-throttling-metrics executor-data) (:stats executor-data)))))
             (if (and (= curr-count (.get emitted-count)) active?)
               (do (.increment empty-emit-streak)
-                  (.emptyEmit spout-wait-strategy (.get empty-emit-streak)))
+                  (.emptyEmit spout-wait-strategy (.get empty-emit-streak))
+                  ;; update the spout throttling metrics
+                  (if throttle-on
+                    (builtin-metrics/skipped-throttle! (:spout-throttling-metrics executor-data) (:stats executor-data))
+                    (if reached-max-spout-pending
+                      (builtin-metrics/skipped-max-spout! (:spout-throttling-metrics executor-data) (:stats executor-data)))))
               (.set empty-emit-streak 0)
               ))           
           0))
