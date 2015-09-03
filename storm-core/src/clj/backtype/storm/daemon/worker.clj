@@ -22,7 +22,7 @@
   (:require [backtype.storm.messaging.loader :as msg-loader])
   (:import [java.util.concurrent Executors])
   (:import [java.util ArrayList HashMap])
-  (:import [backtype.storm.utils Utils TransferDrainer ThriftTopologyUtils WorkerBackpressureThread BackpressureCallback DisruptorQueue])
+  (:import [backtype.storm.utils Utils TransferDrainer ThriftTopologyUtils WorkerBackpressureThread DisruptorQueue])
   (:import [backtype.storm.messaging TransportFactory])
   (:import [backtype.storm.messaging TaskMessage IContext IConnection ConnectionWithStatus ConnectionWithStatus$Status])
   (:import [backtype.storm.daemon Shutdownable])
@@ -116,7 +116,7 @@
 
 (defn- mk-backpressure-handler [executors]
   "make a handler that checks and updates worker's backpressure flag"
-  (disruptor/backpressure-handler 
+  (disruptor/worker-backpressure-handler
     (fn [worker]
       (let [storm-id (:storm-id worker)
             assignment-id (:assignment-id worker)
@@ -134,17 +134,29 @@
           (.worker-backpressure! storm-cluster-state storm-id assignment-id port @(:backpressure worker)))
         ))))
 
+(defn- mk-disruptor-backpressure-handler [worker]
+  "make a handler for the worker's send disruptor queue to
+  check highWaterMark and lowWaterMark for backpressure"
+  (disruptor/disruptor-backpressure-handler
+    (fn []
+      "When worker's queue is above highWaterMark, we set its backpressure flag"
+      (log-message "zliu calling worker's high water mark callback function, q size is " (.population (:transfer-queue worker)))
+      (if (not @(:backpressure worker))
+        (do (reset! (:backpressure worker) true)
+            (log-message "zliu worker itself found tranfer queue congested, set flag true")
+            (DisruptorQueue/notifyBackpressureChecker (:backpressure-trigger worker)))))  ;; set backpressure no matter how the executors are
+    (fn []
+      "If worker's queue is below low watermark, we do nothing since we want the
+      WorkerBackPressureThread to also check for all the executors' status"
+      (log-message "zliu calling worker's low water mark callback function, q size is " (.population (:transfer-queue worker)))
+      )))
+
 (defn mk-transfer-fn [worker]
   (let [local-tasks (-> worker :task-ids set)
         local-transfer (:transfer-local-fn worker)
         ^DisruptorQueue transfer-queue (:transfer-queue worker)
         task->node+port (:cached-task->node+port worker)
         try-serialize-local ((:storm-conf worker) TOPOLOGY-TESTING-ALWAYS-TRY-SERIALIZE)
-        high-watermark ((:storm-conf worker) BACKPRESSURE-WORKER-HIGH-WATERMARK)
-        low-watermark  ((:storm-conf worker) BACKPRESSURE-WORKER-LOW-WATERMARK)
-        transfer-queue-size ((:storm-conf worker) TOPOLOGY-TRANSFER-BUFFER-SIZE)
-        high-watermark (int (* high-watermark transfer-queue-size))
-        low-watermark (int (* low-watermark transfer-queue-size))
 
         transfer-fn
           (fn [^KryoTupleSerializer serializer tuple-batch]
@@ -163,14 +175,6 @@
                         (.add remote (TaskMessage. task (.serialize serializer tuple)))
                         (log-warn "Can't transfer tuple - task value is nil. tuple type: " (pr-str (type tuple)) " and information: " (pr-str tuple)))
                      ))))
-              ;; each executor itself will do the self setting for the worker's backpressure tag
-              ;; however, when the backpressure is set, the worker still need to check whether all the executors' flag has cleared to unset worker's backpressure
-              (if (and ((:storm-conf worker) TOPOLOGY-BACKPRESSURE-ENABLE)
-                    (> (.population transfer-queue) high-watermark)
-                    (not @(:backpressure worker)))
-                (do (reset! (:backpressure worker) true)
-                    (log-message "zliu worker itself found tranfer queue congested, set flag true")
-                    (DisruptorQueue/notifyBackpressureChecker (:backpressure-trigger worker))))  ;; set backpressure no matter how the executors are  
 
               (local-transfer local)
               (disruptor/publish transfer-queue remoteMap)))]
@@ -492,6 +496,12 @@
         
         transfer-thread (disruptor/consume-loop* (:transfer-queue worker) transfer-tuples)               
 
+        disruptor-handler (mk-disruptor-backpressure-handler worker)
+        _ (.registerBackpressureCallback (:transfer-queue worker) disruptor-handler)
+        _ (-> (.setHighWaterMark (:transfer-queue worker) ((:storm-conf worker) BACKPRESSURE-WORKER-HIGH-WATERMARK))
+              (.setLowWaterMark ((:storm-conf worker) BACKPRESSURE-WORKER-LOW-WATERMARK))
+              (.setEnableBackpressure ((:storm-conf worker) TOPOLOGY-BACKPRESSURE-ENABLE)))
+        _ (log-message "zliu worker hm is " (._highWaterMark (:transfer-queue worker)))
         backpressure-handler (mk-backpressure-handler @executors)        
         backpressure-thread (WorkerBackpressureThread. (:backpressure-trigger worker) worker backpressure-handler)
         _ (if ((:storm-conf worker) TOPOLOGY-BACKPRESSURE-ENABLE) 

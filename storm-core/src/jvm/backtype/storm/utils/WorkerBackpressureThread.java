@@ -25,9 +25,9 @@ public class WorkerBackpressureThread extends Thread {
 
     Object trigger;
     Object workerData;
-    BackpressureCallback callback;
+    WorkerBackpressureCallback callback;
 
-    public WorkerBackpressureThread(Object trigger, Object workerData, BackpressureCallback callback) {
+    public WorkerBackpressureThread(Object trigger, Object workerData, WorkerBackpressureCallback callback) {
         this.trigger = trigger;
         this.workerData = workerData;
         this.callback = callback;

@@ -269,6 +269,27 @@
      ;; TODO: add in the executor-specific stuff in a :specific... or make a spout-data, bolt-data function?
      )))
 
+(defn- mk-disruptor-backpressure-handler [executor-data]
+  "make a handler for the executor's receive disruptor queue to
+  check highWaterMark and lowWaterMark for backpressure"
+  (disruptor/disruptor-backpressure-handler
+    (fn []
+      "When receive queue is above highWaterMark"
+      (log-message "zliu calling executor high water mark callback function, " (:executor-id executor-data) ", q size is " (.population (:receive-queue executor-data)))
+      (if (not @(:backpressure executor-data))
+        (do (reset! (:backpressure executor-data) true)
+            (log-debug "executor " (:executor-id executor-data) " is congested, set backpressure flag true")
+            (log-message "zliu executor " (:executor-id executor-data) " is congested, set backpressure flag true")
+            (disruptor/notify-backpressure-checker (:backpressure-trigger (:worker executor-data))))))
+    (fn []
+      "When receive queue is below lowWaterMark"
+      (log-message "zliu calling executor low water mark callback function " (:executor-id executor-data) ", q size is " (.population (:receive-queue executor-data)))   ;; this popu is not the lastest value
+  ;    )))
+      (if @(:backpressure executor-data)
+        (do (reset! (:backpressure executor-data) false)
+            (log-message "zliu executor " (:executor-id executor-data) " is relaxed now, set backpressure flag false")
+            (disruptor/notify-backpressure-checker (:backpressure-trigger (:worker executor-data))))))))
+
 (defn start-batch-transfer->worker-handler! [worker executor-data]
   (let [worker-transfer-fn (:transfer-fn worker)
         cached-emit (MutableObject. (ArrayList.))
@@ -352,6 +373,13 @@
         _ (log-message "Loaded executor tasks " (:component-id executor-data) ":" (pr-str executor-id))
         report-error-and-die (:report-error-and-die executor-data)
         component-id (:component-id executor-data)
+
+
+        disruptor-handler (mk-disruptor-backpressure-handler executor-data)
+        _ (.registerBackpressureCallback (:receive-queue executor-data) disruptor-handler)
+        _ (-> (.setHighWaterMark (:receive-queue executor-data) ((:storm-conf executor-data) BACKPRESSURE-WORKER-HIGH-WATERMARK))
+              (.setLowWaterMark ((:storm-conf executor-data) BACKPRESSURE-WORKER-LOW-WATERMARK))
+              (.setEnableBackpressure ((:storm-conf executor-data) TOPOLOGY-BACKPRESSURE-ENABLE)))
 
         ;; starting the batch-transfer->worker ensures that anything publishing to that queue 
         ;; doesn't block (because it's a single threaded queue and the caching/consumer started
@@ -666,11 +694,6 @@
         {:keys [storm-conf component-id worker-context transfer-fn report-error sampler
                 open-or-prepare-was-called?]} executor-data
         rand (Random. (Utils/secureRandomLong))
-        high-watermark ((:storm-conf executor-data) BACKPRESSURE-EXECUTOR-HIGH-WATERMARK)
-        low-watermark  ((:storm-conf executor-data) BACKPRESSURE-EXECUTOR-LOW-WATERMARK)
-        receive-queue-size ((:storm-conf executor-data) TOPOLOGY-EXECUTOR-RECEIVE-BUFFER-SIZE)
-        high-watermark (int (* high-watermark receive-queue-size))
-        low-watermark (int (* low-watermark receive-queue-size))
         tuple-action-fn (fn [task-id ^TupleImpl tuple curr]
                           ;; synchronization needs to be done with a key provided by this bolt, otherwise:
                           ;; spout 1 sends synchronization (s1), dies, same spout restarts somewhere else, sends synchronization (s2) and incremental update. s2 and update finish before s1 -> lose the incremental update
@@ -688,24 +711,7 @@
                           
                           ;;(log-debug "Received tuple " tuple " at task " task-id)
                           ;; need to do it this way to avoid reflection
-                          (let [stream-id (.getSourceStreamId tuple)
-                                receive-queue (:receive-queue executor-data)
-                                recv-queue-used (- (.writePos receive-queue) curr)
-                                backpressure-enabled ((:storm-conf executor-data) TOPOLOGY-BACKPRESSURE-ENABLE)]
-                            (log-message "zliu1 test executor " (:executor-id executor-data) " q size is " recv-queue-used ", write pos is" (.writePos receive-queue) ", curr is " curr) ;; now We have the latest value of q size. !!!!1
-                            (if (and backpressure-enabled
-                                     (> recv-queue-used high-watermark)
-                                     (not @(:backpressure executor-data)))
-                              (do (reset! (:backpressure executor-data) true)
-                                  (log-debug "executor " (:executor-id executor-data) " is congested, set backpressure flag true")
-                                  (log-message "zliu executor " (:executor-id executor-data) " is congested, set backpressure flag true")
-                                  (disruptor/notify-backpressure-checker (:backpressure-trigger (:worker executor-data)))))
-                            (if (and backpressure-enabled
-                                     (< recv-queue-used low-watermark)
-                                     @(:backpressure executor-data))
-                              (do (reset! (:backpressure executor-data) false)
-                                  (log-message "zliu executor " (:executor-id executor-data) " is relaxed now, set backpressure flag false")
-                                  (disruptor/notify-backpressure-checker (:backpressure-trigger (:worker executor-data)))))
+                          (let [stream-id (.getSourceStreamId tuple)]
                             (condp = stream-id
                               Constants/CREDENTIALS_CHANGED_STREAM_ID 
                                 (let [task-data (get task-datas task-id)

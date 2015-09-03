@@ -19,8 +19,10 @@
 
 package backtype.storm.utils;
 
-public interface BackpressureCallback {
-    void onEvent(Object obj) throws Exception;
+public interface DisruptorBackpressureCallback {
 
+    void highWaterMark() throws Exception;
+
+    void lowWaterMark() throws Exception;
 }
 
