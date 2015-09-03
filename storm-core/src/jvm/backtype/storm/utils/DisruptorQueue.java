@@ -135,7 +135,7 @@ public class DisruptorQueue implements IStatefulObject {
                     throw new InterruptedException("Disruptor processing interrupted");
                 } else {
                     handler.onEvent(o, curr, curr == cursor);
-                    if (_enableBackpressure && _cb != null && writePos() - curr < _lowWaterMark) {
+                    if (_enableBackpressure && _cb != null && writePos() - curr <= _lowWaterMark) {
                         try {
                             _cb.lowWaterMark();
                         } catch (Exception e) {
@@ -211,7 +211,7 @@ public class DisruptorQueue implements IStatefulObject {
         final MutableObject m = _buffer.get(id);
         m.setObject(obj);
         _buffer.publish(id);
-        if (_enableBackpressure && _cb != null && population() > _highWaterMark) {
+        if (_enableBackpressure && _cb != null && population() >= _highWaterMark) {
            try {
                _cb.highWaterMark();
            } catch (Exception e) {
@@ -256,6 +256,14 @@ public class DisruptorQueue implements IStatefulObject {
     public DisruptorQueue setLowWaterMark(double lowWaterMark) {
         this._lowWaterMark = (int)(capacity() * lowWaterMark);
         return this;
+    }
+
+    public int getHighWaterMark() {
+        return this._highWaterMark;
+    }
+
+    public int getLowWaterMark() {
+        return this._lowWaterMark;
     }
 
     public DisruptorQueue setEnableBackpressure(boolean enableBackpressure) {
