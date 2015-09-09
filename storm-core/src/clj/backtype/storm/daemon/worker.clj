@@ -123,8 +123,6 @@
             port (:port worker)
             storm-cluster-state (:storm-cluster-state worker)
             prev-backpressure-flag @(:backpressure worker)]
-        (doseq [ed executors] ;; Debug, TODO: delete
-          (log-message "zliu executor" (.get-executor-id ed) " flag is " (.get-backpressure-flag ed)))
         (if executors 
           (if (reduce #(or %1 %2) (map #(.get-backpressure-flag %1) executors))
             (reset! (:backpressure worker) true)   ;; at least one executor has set backpressure
@@ -140,15 +138,12 @@
   (disruptor/disruptor-backpressure-handler
     (fn []
       "When worker's queue is above highWaterMark, we set its backpressure flag"
-      (log-message "zliu calling worker's high water mark callback function, q size is " (.population (:transfer-queue worker)))
       (if (not @(:backpressure worker))
         (do (reset! (:backpressure worker) true)
-            (log-message "zliu worker itself found tranfer queue congested, set flag true")
             (DisruptorQueue/notifyBackpressureChecker (:backpressure-trigger worker)))))  ;; set backpressure no matter how the executors are
     (fn []
       "If worker's queue is below low watermark, we do nothing since we want the
       WorkerBackPressureThread to also check for all the executors' status"
-      (log-message "zliu calling worker's low water mark callback function, q size is " (.population (:transfer-queue worker)))
       )))
 
 (defn mk-transfer-fn [worker]
@@ -501,7 +496,6 @@
         _ (-> (.setHighWaterMark (:transfer-queue worker) ((:storm-conf worker) BACKPRESSURE-WORKER-HIGH-WATERMARK))
               (.setLowWaterMark ((:storm-conf worker) BACKPRESSURE-WORKER-LOW-WATERMARK))
               (.setEnableBackpressure ((:storm-conf worker) TOPOLOGY-BACKPRESSURE-ENABLE)))
-        _ (log-message "zliu worker hm is " (._highWaterMark (:transfer-queue worker)))
         backpressure-handler (mk-backpressure-handler @executors)        
         backpressure-thread (WorkerBackpressureThread. (:backpressure-trigger worker) worker backpressure-handler)
         _ (if ((:storm-conf worker) TOPOLOGY-BACKPRESSURE-ENABLE) 

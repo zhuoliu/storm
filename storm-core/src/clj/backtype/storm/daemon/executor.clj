@@ -275,19 +275,14 @@
   (disruptor/disruptor-backpressure-handler
     (fn []
       "When receive queue is above highWaterMark"
-      (log-message "zliu calling executor high water mark callback function, " (:executor-id executor-data) ", q size is " (.population (:receive-queue executor-data)))
       (if (not @(:backpressure executor-data))
         (do (reset! (:backpressure executor-data) true)
             (log-debug "executor " (:executor-id executor-data) " is congested, set backpressure flag true")
-            (log-message "zliu executor " (:executor-id executor-data) " is congested, set backpressure flag true")
             (disruptor/notify-backpressure-checker (:backpressure-trigger (:worker executor-data))))))
     (fn []
       "When receive queue is below lowWaterMark"
-      (log-message "zliu calling executor low water mark callback function " (:executor-id executor-data) ", q size is " (.population (:receive-queue executor-data)))   ;; this popu is not the lastest value
-  ;    )))
       (if @(:backpressure executor-data)
         (do (reset! (:backpressure executor-data) false)
-            (log-message "zliu executor " (:executor-id executor-data) " is relaxed now, set backpressure flag false")
             (disruptor/notify-backpressure-checker (:backpressure-trigger (:worker executor-data))))))))
 
 (defn start-batch-transfer->worker-handler! [worker executor-data]
@@ -635,9 +630,6 @@
                 reached-max-spout-pending (and max-spout-pending
                                                (>= (.size pending) max-spout-pending))
                 ]
-                ;; zliu TODO calculate nd update the metrics for backpressure, spout-pending, activeness, etcs here 
-            (if (and backpressure-enabled throttle-on)  ;; debug, TODO: delete
-              (log-message "zliu Spout executor " (:executor-id executor-data) " found throttle-on, now suspends sending tuples"))
             (if (and (.isEmpty overflow-buffer)
                      (not throttle-on)
                      (not reached-max-spout-pending))
