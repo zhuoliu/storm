@@ -458,10 +458,10 @@
           (let [^TupleImpl tuple (if (instance? Tuple msg) msg (.deserialize deserializer msg))]
             (when debug? (log-message "Processing received message FOR " task-id " TUPLE: " tuple))
             (if task-id
-              (tuple-action-fn task-id tuple sequence-id)
+              (tuple-action-fn task-id tuple)
               ;; null task ids are broadcast tuples
               (fast-list-iter [task-id task-ids]
-                (tuple-action-fn task-id tuple sequence-id)
+                (tuple-action-fn task-id tuple)
                 ))
             ))))))
 
@@ -491,7 +491,7 @@
                      (let [time-delta (if start-time-ms (time-delta-ms start-time-ms))]
                        (fail-spout-msg executor-data (get task-datas task-id) spout-id tuple-info time-delta "TIMEOUT" id)
                        ))))
-        tuple-action-fn (fn [task-id ^TupleImpl tuple curr]
+        tuple-action-fn (fn [task-id ^TupleImpl tuple]
                           (let [stream-id (.getSourceStreamId tuple)]
                             (condp = stream-id
                               Constants/SYSTEM_TICK_STREAM_ID (.rotate pending)
@@ -686,7 +686,7 @@
         {:keys [storm-conf component-id worker-context transfer-fn report-error sampler
                 open-or-prepare-was-called?]} executor-data
         rand (Random. (Utils/secureRandomLong))
-        tuple-action-fn (fn [task-id ^TupleImpl tuple curr]
+        tuple-action-fn (fn [task-id ^TupleImpl tuple]
                           ;; synchronization needs to be done with a key provided by this bolt, otherwise:
                           ;; spout 1 sends synchronization (s1), dies, same spout restarts somewhere else, sends synchronization (s2) and incremental update. s2 and update finish before s1 -> lose the incremental update
                           ;; TODO: for state sync, need to first send sync messages in a loop and receive tuples until synchronization
