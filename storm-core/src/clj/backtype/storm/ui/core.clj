@@ -909,6 +909,7 @@
     (let [user (.getUserName http-creds-handler servlet-request)]
       (json-response (topology-history-info user) (:callback m))))
   (GET "/api/v1/supervisor/summary" [:as {:keys [cookies servlet-request]} & m]
+    (populate-context! servlet-request)
     (assert-authorized-user servlet-request "getClusterInfo")
     (json-response (assoc (supervisor-summary)
                      "logviewerPort" (*STORM-CONF* LOGVIEWER-PORT)) (:callback m)))
