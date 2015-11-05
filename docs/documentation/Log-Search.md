@@ -1,7 +1,7 @@
 Log Search
 ==========================
 
-This feature is aimed for improving the debugging of Storm. Log Search supports following two major functionalities:
+This feature is aimed for improving the debugging of Storm. Log Search supports searching in a certain log file or in a topology's all log files:
 
 Using the Storm UI
 -------------
