@@ -139,22 +139,25 @@
 
 (defn- mk-backpressure-handler [executors]
   "make a handler that checks and updates worker's backpressure flag"
-  (reify WorkerBackpressureCallback
-    (onEvent [this worker]
+  (disruptor/worker-backpressure-handler
+    (fn [worker]
       (let [storm-id (:storm-id worker)
             assignment-id (:assignment-id worker)
             port (:port worker)
             storm-cluster-state (:storm-cluster-state worker)
-            prev-backpressure-flag @(:backpressure worker)]
-        (when executors
-          (reset! (:backpressure worker)
-                  (or @(:transfer-backpressure worker)
-                      (reduce #(or %1 %2) (map #(.get-backpressure-flag %1) executors)))))
+            prev-backpressure-flag @(:backpressure worker)
+            ;; the backpressure flag is true if at least one of the disruptor queues has throttle-on
+            curr-backpressure-flag (if executors
+                                     (or (.getThrottleOn (:transfer-queue worker))
+                                       (reduce #(or %1 %2) (map #(.get-backpressure-flag %1) executors)))
+                                     prev-backpressure-flag)]
         ;; update the worker's backpressure flag to zookeeper only when it has changed
-        (log-debug "BP " @(:backpressure worker) " WAS " prev-backpressure-flag)
-        (when (not= prev-backpressure-flag @(:backpressure worker))
+        (when (not= prev-backpressure-flag curr-backpressure-flag)
           (try
-            (.workerBackpressure storm-cluster-state storm-id assignment-id (long port) @(:backpressure worker))
+            (log-debug "worker backpressure flag changing from " prev-backpressure-flag " to " curr-backpressure-flag)
+            (.worker-backpressure! storm-cluster-state storm-id assignment-id port curr-backpressure-flag)
+            ;; doing the local reset after the zk update succeeds is very important to avoid a bad state upon zk exception
+            (reset! (:backpressure worker) curr-backpressure-flag)
             (catch Exception exc
               (log-error exc "workerBackpressure update failed when connecting to ZK ... will retry"))))
         ))))
@@ -162,12 +165,12 @@
 (defn- mk-disruptor-backpressure-handler [worker]
   "make a handler for the worker's send disruptor queue to
   check highWaterMark and lowWaterMark for backpressure"
-  (reify DisruptorBackpressureCallback
-    (highWaterMark [this]
-      (reset! (:transfer-backpressure worker) true)
+  (disruptor/disruptor-backpressure-handler
+    (fn []
+      (log-debug "worker " (:worker-id worker) " transfer-queue is congested, set backpressure flag true")
       (WorkerBackpressureThread/notifyBackpressureChecker (:backpressure-trigger worker)))
-    (lowWaterMark [this]
-      (reset! (:transfer-backpressure worker) false)
+    (fn []
+      (log-debug "worker " (:worker-id worker) " transfer-queue is not congested, set backpressure flag false")
       (WorkerBackpressureThread/notifyBackpressureChecker (:backpressure-trigger worker)))))
 
 (defn mk-transfer-fn [worker]
@@ -327,7 +330,6 @@
       :load-mapping (LoadMapping.)
       :assignment-versions assignment-versions
       :backpressure (atom false) ;; whether this worker is going slow
-      :transfer-backpressure (atom false) ;; if the transfer queue is backed-up
       :backpressure-trigger (atom false) ;; a trigger for synchronization with executors
       :throttle-on (atom false) ;; whether throttle is activated for spouts
       )))
@@ -694,11 +696,13 @@
         backpressure-thread (WorkerBackpressureThread. (:backpressure-trigger worker) worker backpressure-handler)
         _ (if ((:storm-conf worker) TOPOLOGY-BACKPRESSURE-ENABLE) 
             (.start backpressure-thread))
-        callback (fn cb []
-                   (let [throttle-on (.topologyBackpressure storm-cluster-state storm-id cb)]
-                     (reset! (:throttle-on worker) throttle-on)))
+        ;; this callback is registered as a zk watch on topology's backpressure directory
+        ;; which makes sure that the topology's backpressure status is updated to the worker's throttle-on
+        topology-backpressure-callback (fn cb [& ignored]
+                                         (let [throttle-on (.topology-backpressure storm-cluster-state storm-id cb)]
+                                           (reset! (:throttle-on worker) throttle-on)))
         _ (if ((:storm-conf worker) TOPOLOGY-BACKPRESSURE-ENABLE)
-            (.topologyBackpressure storm-cluster-state storm-id callback))
+            (.topology-backpressure storm-cluster-state storm-id topology-backpressure-callback))
 
         shutdown* (fn []
                     (log-message "Shutting down worker " storm-id " " assignment-id " " port)
@@ -765,12 +769,6 @@
                                         (AuthUtils/updateSubject subject auto-creds new-creds)
                                         (dofor [e @executors] (.credentials-changed e new-creds))
                                         (reset! credentials new-creds))))
-       check-throttle-changed (fn []
-                                (let [callback (fn cb []
-                                                 (let [throttle-on (.topologyBackpressure (:storm-cluster-state worker) storm-id cb)]
-                                                   (reset! (:throttle-on worker) throttle-on)))
-                                      new-throttle-on (.topologyBackpressure (:storm-cluster-state worker) storm-id callback)]
-                                    (reset! (:throttle-on worker) new-throttle-on)))
         check-log-config-changed (fn []
                                   (let [log-config (.topologyLogConfig (:storm-cluster-state worker) storm-id nil)]
                                     (process-log-config-change latest-log-config original-log-levels log-config)
