@@ -165,11 +165,11 @@
 (defn- mk-disruptor-backpressure-handler [worker]
   "make a handler for the worker's send disruptor queue to
   check highWaterMark and lowWaterMark for backpressure"
-  (disruptor/disruptor-backpressure-handler
-    (fn []
+  (reify DisruptorBackpressureCallback
+    (highWaterMark [this]
       (log-debug "worker " (:worker-id worker) " transfer-queue is congested, set backpressure flag true")
       (WorkerBackpressureThread/notifyBackpressureChecker (:backpressure-trigger worker)))
-    (fn []
+    (lowWaterMark [this]
       (log-debug "worker " (:worker-id worker) " transfer-queue is not congested, set backpressure flag false")
       (WorkerBackpressureThread/notifyBackpressureChecker (:backpressure-trigger worker)))))
 
@@ -699,10 +699,10 @@
         ;; this callback is registered as a zk watch on topology's backpressure directory
         ;; which makes sure that the topology's backpressure status is updated to the worker's throttle-on
         topology-backpressure-callback (fn cb [& ignored]
-                                         (let [throttle-on (.topology-backpressure storm-cluster-state storm-id cb)]
+                                         (let [throttle-on (.topologyBackpressure storm-cluster-state storm-id cb)]
                                            (reset! (:throttle-on worker) throttle-on)))
         _ (if ((:storm-conf worker) TOPOLOGY-BACKPRESSURE-ENABLE)
-            (.topology-backpressure storm-cluster-state storm-id topology-backpressure-callback))
+            (.topologyBackpressure storm-cluster-state storm-id topology-backpressure-callback))
 
         shutdown* (fn []
                     (log-message "Shutting down worker " storm-id " " assignment-id " " port)
@@ -787,7 +787,7 @@
         (fn []
           (check-credentials-changed)
           (if ((:storm-conf worker) TOPOLOGY-BACKPRESSURE-ENABLE)
-            (check-throttle-changed))))
+            (topology-backpressure-callback))))
     ;; The jitter allows the clients to get the data at different times, and avoids thundering herd
     (when-not (.get conf TOPOLOGY-DISABLE-LOADAWARE-MESSAGING)
       (.scheduleRecurringWithJitter
