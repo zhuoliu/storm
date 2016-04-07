@@ -220,15 +220,15 @@
 (defn- mk-disruptor-backpressure-handler [executor-data]
   "make a handler for the executor's receive disruptor queue to
   check highWaterMark and lowWaterMark for backpressure"
-  (disruptor/disruptor-backpressure-handler
-    (fn []
+  (reify DisruptorBackpressureCallback
+    (highWaterMark [this]
       "When receive queue is above highWaterMark"
       (do (log-debug "executor " (:executor-id executor-data) " is congested, set backpressure flag true")
-        (WorkerBackpressureThread/notifyBackpressureChecker (:backpressure-trigger (:worker executor-data)))))
-    (fn []
+          (WorkerBackpressureThread/notifyBackpressureChecker (:backpressure-trigger (:worker executor-data)))))
+    (lowWaterMark [this]
       "When receive queue is below lowWaterMark"
       (do (log-debug "executor " (:executor-id executor-data) " is not-congested, set backpressure flag false")
-        (WorkerBackpressureThread/notifyBackpressureChecker (:backpressure-trigger (:worker executor-data)))))))
+          (WorkerBackpressureThread/notifyBackpressureChecker (:backpressure-trigger (:worker executor-data)))))))
 
 (defn start-batch-transfer->worker-handler! [worker executor-data]
   (let [worker-transfer-fn (:transfer-fn worker)

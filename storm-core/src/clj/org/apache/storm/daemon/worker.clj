@@ -139,8 +139,8 @@
 
 (defn- mk-backpressure-handler [executors]
   "make a handler that checks and updates worker's backpressure flag"
-  (disruptor/worker-backpressure-handler
-    (fn [worker]
+  (reify WorkerBackpressureCallback
+    (onEvent [this worker]
       (let [storm-id (:storm-id worker)
             assignment-id (:assignment-id worker)
             port (:port worker)
